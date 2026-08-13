@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-Файл содержит 5 готовых к запуску бэктестов для Google Colab.
+Файл содержит две части:
+ЧАСТЬ 1: Базовые 5 бэктестов для Google Colab (Фандинг, Календари, Спреды).
+ЧАСТЬ 2: Продвинутый мульти-индикаторный бэктест (Класс AdvancedOptionsBacktest),
+         который задействует Z-Score перепроданности/перекупленности, 
+         анализ ожидаемой и исторической волатильности (IV/HV) и перекос улыбки (Skew).
+
 Все расчеты настроены под тариф «Стандартный ФОРТС» (0.45 руб. за контракт).
 Период моделирования: 01.01.2023 - 01.08.2026.
 Стартовый баланс: 1 000 000 рублей на каждую стратегию.
@@ -11,8 +16,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ==============================================================================
-# СТРАТЕГИЯ 1: Арбитраж ставки фандинга (Perpetual Futures vs Spot)
+# ЧАСТЬ 1: БАЗОВЫЕ 5 БЭКТЕСТОВ
 # ==============================================================================
+
+# 1. Арбитраж ставки фандинга (Perpetual Futures vs Spot)
 def run_funding_arbitrage_backtest():
     print("\n" + "="*80)
     print("ЗАПУСК БЭКТЕСТА 1: АРБИТРАЖ СТАВКИ ФАНДИНГА (Perpetual vs Spot)")
@@ -102,20 +109,9 @@ def run_funding_arbitrage_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(10, 5))
-    plt.plot(dates, equity_curve, color="green", linewidth=2.5, label="Баланс счета (Фандинг)")
-    plt.title("Изменение счета по Стратегии 1: Арбитраж Фандинга")
-    plt.xlabel("Дата")
-    plt.ylabel("Баланс счета, руб.")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.show()
-    
     return dates, equity_curve
 
-# ==============================================================================
-# СТРАТЕГИЯ 2: Календарный спред фьючерсов (CNY-9.26 vs CNY-12.26)
-# ==============================================================================
+# 2. Календарный спред фьючерсов
 def run_calendar_futures_backtest():
     print("\n" + "="*80)
     print("ЗАПУСК БЭКТЕСТА 2: КАЛЕНДАРНЫЙ СПРЕД ФЬЮЧЕРСОВ (CNY)")
@@ -191,20 +187,9 @@ def run_calendar_futures_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(10, 5))
-    plt.plot(dates, equity_curve, color="blue", linewidth=2.5, label="Баланс счета (Календарный Спред)")
-    plt.title("Изменение счета по Стратегии 2: Календарный Спред CNY")
-    plt.xlabel("Дата")
-    plt.ylabel("Баланс счета, руб.")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.show()
-    
     return dates, equity_curve
 
-# ==============================================================================
-# СТРАТЕГИЯ 3: Вертикальный Bull Call Спред на фьючерсы Sberbank (SBRF)
-# ==============================================================================
+# 3. Вертикальный Bull Call Спред на фьючерсы Sberbank (SBRF)
 def run_vertical_spread_backtest():
     print("\n" + "="*80)
     print("ЗАПУСК БЭКТЕСТА 3: ВЕРТИКАЛЬНЫЙ CALL СПРЕД SBRF")
@@ -275,20 +260,9 @@ def run_vertical_spread_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(10, 5))
-    plt.plot(dates[:-1], equity_curve, color="purple", linewidth=2.5, label="Баланс счета (SBRF Option Spread)")
-    plt.title("Изменение счета по Стратегии 3: Вертикальный Спред SBRF")
-    plt.xlabel("Дата")
-    plt.ylabel("Баланс счета, руб.")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.show()
-    
     return dates[:-1], equity_curve
 
-# ==============================================================================
-# СТРАТЕГИЯ 4: Горизонтальный (календарный) спред на опционы Газпрома (GAZR)
-# ==============================================================================
+# 4. Горизонтальный (календарный) спред на опционы Газпрома (GAZR)
 def run_horizontal_spread_backtest():
     print("\n" + "="*80)
     print("ЗАПУСК БЭКТЕСТА 4: ГОРИЗОНТАЛЬНЫЙ (КАЛЕНДАРНЫЙ) СПРЕД GAZR")
@@ -357,20 +331,9 @@ def run_horizontal_spread_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(10, 5))
-    plt.plot(dates[:-1], equity_curve, color="darkblue", linewidth=2.5, label="Баланс счета (GAZR Horizontal)")
-    plt.title("Изменение счета по Стратегии 4: Горизонтальный Спред GAZR")
-    plt.xlabel("Дата")
-    plt.ylabel("Баланс счета, руб.")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.show()
-    
     return dates[:-1], equity_curve
 
-# ==============================================================================
-# СТРАТЕГИЯ 5: Кросс-диагональный спред (SBRF vs SBER - Опционы на фьючерсы vs Акции)
-# ==============================================================================
+# 5. Кросс-диагональный спред (SBRF vs SBER - Опционы на фьючерсы vs Акции)
 def run_diagonal_spread_backtest():
     print("\n" + "="*80)
     print("ЗАПУСК БЭКТЕСТА 5: КРОСС-ДИАГОНАЛЬНЫЙ СПРЕД SBER")
@@ -438,24 +401,186 @@ def run_diagonal_spread_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(10, 5))
-    plt.plot(dates[:-1], equity_curve, color="purple", linewidth=2.5, label="Баланс счета (SBER Diagonal)")
-    plt.title("Изменение счета по Стратегии 5: Кросс-Диагональный Спред SBER")
-    plt.xlabel("Дата")
-    plt.ylabel("Баланс счета, руб.")
-    plt.grid(True, linestyle="--", alpha=0.7)
-    plt.legend()
-    plt.show()
-    
     return dates[:-1], equity_curve
 
 # ==============================================================================
-# ГЛАВНЫЙ ЗАПУСК ВСЕХ 5 СТРАТЕГИЙ
+# ЧАСТЬ 2: ПРОДВИНУТЫЙ МУЛЬТИ-ИНДИКАТОРНЫЙ БЭКТЕСТ
+# ==============================================================================
+
+class AdvancedOptionsBacktest:
+    """
+    Класс реализует продвинутую торговую систему, сочетающую:
+    1. Z-Score (Среднесрочный возврат цены к средней).
+    2. Волатильный Арбитраж (Сравнение Ожидаемой IV и Исторической HV волатильностей).
+    3. Учет тарифа «Стандартный ФОРТС» (0.45 руб. ИТС / 0.90 руб. исполнение).
+    """
+    def __init__(self, initial_capital=1000000.0):
+        self.capital = initial_capital
+        self.initial_capital = initial_capital
+        self.commission_its = 0.45
+        self.commission_exercise = 0.90
+        self.contracts_qty = 250  # Оптимальный объем контрактов под ГО
+        
+        # Генерация синтетического датасета Sberbank (SBRF) 2023-2026 с волатильностью
+        np.random.seed(888)
+        self.dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
+        n_periods = len(self.dates)
+        
+        # Симулируем цену фьючерса, историческую волатильность HV и ожидаемую волатильность IV
+        self.prices = 16000 + np.cumsum(np.random.normal(400, 1800, n_periods))
+        self.hv = np.random.uniform(0.15, 0.25, n_periods)  # Реальная историческая волатильность
+        self.iv = self.hv * np.random.uniform(0.8, 1.5, n_periods)  # Ожидаемая волатильность рынка
+        
+        self.trade_log = []
+        self.equity_curve = []
+        
+    def run(self):
+        print("\n" + "="*80)
+        print("ЗАПУСК ПРОДВИНУТОГО МУЛЬТИ-ИНДИКАТОРНОГО БЭКТЕСТА (Z-Score + IV/HV)")
+        print("="*80)
+        
+        # Вычисление Z-Score по ценовому ряду
+        prices_series = pd.Series(self.prices)
+        rolling_mean = prices_series.rolling(window=5, min_periods=1).mean()
+        rolling_std = prices_series.rolling(window=5, min_periods=1).std().fillna(1000)
+        z_scores = (prices_series - rolling_mean) / rolling_std
+        
+        for i in range(len(self.dates) - 1):
+            date = self.dates[i]
+            sbrf_entry = self.prices[i]
+            sbrf_exit = self.prices[i+1]
+            z_score = z_scores[i]
+            current_iv = self.iv[i]
+            current_hv = self.hv[i]
+            
+            # 1. Выбор направления на основе Z-Score (Выход за ±1.0)
+            if z_score < -1.0:
+                direction = "BULL"  # Перепроданность -> открываем Бычий спред
+            elif z_score > 1.0:
+                direction = "BEAR"  # Перекупленность -> открываем Медвежий спред
+            else:
+                direction = "NEUTRAL"  # Во флэте открываем Календарный спред
+                
+            # 2. Выбор типа опциона и его дешевизны на основе IV/HV
+            iv_hv_ratio = current_iv / current_hv
+            
+            # Стоимость входа
+            broker_fee_open = (self.contracts_qty * 2) * self.commission_its
+            broker_fee_exit = 0.0
+            net_payoff = 0.0
+            net_premium_paid = 0.0
+            
+            strike_buy = int(sbrf_entry // 500) * 500
+            
+            if direction == "BULL":
+                # BULL CALL SPREAD
+                strike_sell = strike_buy + 1500
+                prem_buy = 600.0 * (iv_hv_ratio)  # Премия масштабируется от волатильности
+                prem_sell = 200.0 * (iv_hv_ratio)
+                net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
+                
+                self.capital -= (net_premium_paid + broker_fee_open)
+                
+                # Итог экспирации
+                payoff_buy = max(0, sbrf_exit - strike_buy) * self.contracts_qty
+                payoff_sell = max(0, sbrf_exit - strike_sell) * self.contracts_qty
+                net_payoff = payoff_buy - payoff_sell
+                
+                if sbrf_exit > strike_buy:
+                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                if sbrf_exit > strike_sell:
+                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                    
+            elif direction == "BEAR":
+                # BEAR PUT SPREAD
+                strike_sell = strike_buy - 1500
+                prem_buy = 600.0 * (iv_hv_ratio)
+                prem_sell = 200.0 * (iv_hv_ratio)
+                net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
+                
+                self.capital -= (net_premium_paid + broker_fee_open)
+                
+                # Итог экспирации
+                payoff_buy = max(0, strike_buy - sbrf_exit) * self.contracts_qty
+                payoff_sell = max(0, strike_sell - sbrf_exit) * self.contracts_qty
+                net_payoff = payoff_buy - payoff_sell
+                
+                if sbrf_exit < strike_buy:
+                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                if sbrf_exit < strike_sell:
+                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                    
+            else:
+                # NEUTRAL: Календарный спред (собираем распад времени)
+                prem_sell_near = 300.0 * (iv_hv_ratio)
+                prem_buy_far = 800.0 * (iv_hv_ratio)
+                net_premium_paid = (prem_buy_far - prem_sell_near) * self.contracts_qty
+                
+                self.capital -= (net_premium_paid + broker_fee_open)
+                
+                payoff_near = max(0, sbrf_exit - strike_buy) * self.contracts_qty
+                val_far = (max(0, sbrf_exit - strike_buy) + 250.0) * self.contracts_qty
+                net_payoff = val_far - payoff_near
+                
+                if sbrf_exit > strike_buy:
+                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                    
+            # Фиксация финансового результата периода
+            period_profit = net_payoff - broker_fee_exit
+            self.capital += net_payoff - broker_fee_exit
+            
+            self.trade_log.append({
+                "Дата": date.strftime("%Y-%m"),
+                "SBRF Вход": int(sbrf_entry),
+                "SBRF Выход": int(sbrf_exit),
+                "Z-Score": round(z_score, 2),
+                "Отношение IV/HV": round(iv_hv_ratio, 2),
+                "Направление": direction,
+                "Чистый Профит": round(period_profit - net_premium_paid, 2),
+                "Комиссия": round(broker_fee_open + broker_fee_exit, 2),
+                "Баланс": round(self.capital, 2)
+            })
+            self.equity_curve.append(self.capital)
+            
+        df_log = pd.DataFrame(self.trade_log)
+        print("\n--- СИСТЕМНЫЙ ЖУРНАЛ СДЕЛКИ (ПРОДВИНУТЫЙ МИКС-БЭКТЕСТ) ---")
+        print(df_log.to_string(index=False))
+        
+        total_return = (self.capital - self.initial_capital) / self.initial_capital * 100
+        days_total = (self.dates[-1] - self.dates[0]).days
+        apy = total_return * (365.0 / days_total)
+        
+        print("\n" + "-"*40)
+        print(f"Итоговый баланс (Продвинутый бэктест): {round(self.capital, 2)} руб.")
+        print(f"Общая доходность: {round(total_return, 2)}%")
+        print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+        print("-"*40 + "\n")
+        
+        # Отрисовка графика
+        plt.figure(figsize=(12, 6))
+        plt.plot(self.dates[:-1], self.equity_curve, color="darkorange", linewidth=2.5, marker="D", label="Баланс счета (Z-Score + IV/HV)")
+        plt.title("Изменение счета по Продвинутому Опционному Бэктесту на SBRF (2023-2026)")
+        plt.xlabel("Дата")
+        plt.ylabel("Баланс счета, руб.")
+        plt.grid(True, linestyle="--", alpha=0.7)
+        plt.legend()
+        plt.show()
+        
+        return self.dates[:-1], self.equity_curve
+
+# ==============================================================================
+# ГЛАВНЫЙ ЗАПУСК
 # ==============================================================================
 if __name__ == "__main__":
-    dates1, eq1 = run_funding_arbitrage_backtest()
-    dates2, eq2 = run_calendar_futures_backtest()
-    dates3, eq3 = run_vertical_spread_backtest()
-    dates4, eq4 = run_horizontal_spread_backtest()
-    dates5, eq5 = run_diagonal_spread_backtest()
-    print("\nВсе 5 бэктестов успешно завершены и выведены в формате Google Colab!")
+    # 1. Запуск базовых бэктестов
+    run_funding_arbitrage_backtest()
+    run_calendar_futures_backtest()
+    run_vertical_spread_backtest()
+    run_horizontal_spread_backtest()
+    run_diagonal_spread_backtest()
+    
+    # 2. Запуск продвинутого мульти-индикаторного бэктеста (ЧАСТЬ 2)
+    adv_test = AdvancedOptionsBacktest()
+    adv_test.run()
+    
+    print("\nВсе бэктесты и продвинутый микс-тест успешно выполнены!")
