@@ -60,7 +60,7 @@ def run_funding_arbitrage_backtest():
         if position_opened:
             daily_funding_gain = (num_contracts * 1000 * spot_price) * daily_funding_rate
             capital += daily_funding_gain
-            # Логируем периодически или при сильном изменении ставки
+            # Логируем периодически
             if i % 180 == 0:
                 trade_log.append({
                     "Дата": date.strftime("%Y-%m-%d"),
@@ -74,7 +74,6 @@ def run_funding_arbitrage_backtest():
             
         equity_curve.append(capital)
         
-    # Выход в конце периода
     spot_val = num_contracts * 1000 * spot_prices[-1]
     exit_broker_fee = (num_contracts * commission_its) + (spot_val * commission_spot)
     capital -= exit_broker_fee
@@ -89,7 +88,6 @@ def run_funding_arbitrage_backtest():
     })
     equity_curve[-1] = capital
     
-    # Печать журнала сделок
     df_log = pd.DataFrame(trade_log)
     print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 1 ---")
     print(df_log.to_string(index=False))
@@ -104,10 +102,9 @@ def run_funding_arbitrage_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    # Построение графика
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(10, 5))
     plt.plot(dates, equity_curve, color="green", linewidth=2.5, label="Баланс счета (Фандинг)")
-    plt.title("Изменение счета по Стратегии 1: Арбитраж Фандинга (2023-2026)")
+    plt.title("Изменение счета по Стратегии 1: Арбитраж Фандинга")
     plt.xlabel("Дата")
     plt.ylabel("Баланс счета, руб.")
     plt.grid(True, linestyle="--", alpha=0.7)
@@ -194,9 +191,9 @@ def run_calendar_futures_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(10, 5))
     plt.plot(dates, equity_curve, color="blue", linewidth=2.5, label="Баланс счета (Календарный Спред)")
-    plt.title("Изменение счета по Стратегии 2: Календарный Спред CNY (2023-2026)")
+    plt.title("Изменение счета по Стратегии 2: Календарный Спред CNY")
     plt.xlabel("Дата")
     plt.ylabel("Баланс счета, руб.")
     plt.grid(True, linestyle="--", alpha=0.7)
@@ -278,9 +275,9 @@ def run_vertical_spread_backtest():
     print(f"Доходность в годовых (APY): {round(apy, 2)}%")
     print("-"*40 + "\n")
     
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(10, 5))
     plt.plot(dates[:-1], equity_curve, color="purple", linewidth=2.5, label="Баланс счета (SBRF Option Spread)")
-    plt.title("Изменение счета по Стратегии 3: Вертикальный Спред SBRF (2023-2026)")
+    plt.title("Изменение счета по Стратегии 3: Вертикальный Спред SBRF")
     plt.xlabel("Дата")
     plt.ylabel("Баланс счета, руб.")
     plt.grid(True, linestyle="--", alpha=0.7)
@@ -289,8 +286,176 @@ def run_vertical_spread_backtest():
     
     return dates[:-1], equity_curve
 
+# ==============================================================================
+# СТРАТЕГИЯ 4: Горизонтальный (календарный) спред на опционы Газпрома (GAZR)
+# ==============================================================================
+def run_horizontal_spread_backtest():
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 4: ГОРИЗОНТАЛЬНЫЙ (КАЛЕНДАРНЫЙ) СПРЕД GAZR")
+    print("="*80)
+    np.random.seed(123)
+    dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
+    n_periods = len(dates)
+    
+    gazr_prices = 16500 + np.cumsum(np.random.normal(0, 800, n_periods))
+    capital = 1000000.0
+    initial_capital = capital
+    commission_its = 0.45
+    commission_exercise = 0.90
+    contracts_qty = 150
+    
+    trade_log = []
+    equity_curve = []
+    
+    for i, date in enumerate(dates[:-1]):
+        gazr_entry = gazr_prices[i]
+        gazr_exit = gazr_prices[i+1]
+        
+        strike = int(gazr_entry // 500) * 500
+        
+        prem_near_sell = 300.0
+        prem_far_buy = 800.0
+        net_cost = (prem_far_buy - prem_near_sell) * contracts_qty
+        
+        broker_fee_open = (contracts_qty * 2) * commission_its
+        capital -= (net_cost + broker_fee_open)
+        
+        payoff_near_sell = max(0, gazr_exit - strike) * contracts_qty
+        val_far_buy = (max(0, gazr_exit - strike) + 250.0) * contracts_qty
+        
+        profit = val_far_buy - payoff_near_sell
+        capital += profit
+        
+        broker_fee_exit = 0.0
+        if gazr_exit > strike:
+            broker_fee_exit += contracts_qty * commission_exercise
+            
+        capital -= broker_fee_exit
+        
+        trade_log.append({
+            "Период": date.strftime("%Y-%m"),
+            "GAZR Вход": int(gazr_entry),
+            "GAZR Выход": int(gazr_exit),
+            "Страйк": strike,
+            "Доходность спреда": round(profit - net_cost, 2),
+            "Комиссии": round(broker_fee_open + broker_fee_exit, 2),
+            "Баланс": round(capital, 2)
+        })
+        equity_curve.append(capital)
+        
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 4 ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 4): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(dates[:-1], equity_curve, color="darkblue", linewidth=2.5, label="Баланс счета (GAZR Horizontal)")
+    plt.title("Изменение счета по Стратегии 4: Горизонтальный Спред GAZR")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
+    
+    return dates[:-1], equity_curve
+
+# ==============================================================================
+# СТРАТЕГИЯ 5: Кросс-диагональный спред (SBRF vs SBER - Опционы на фьючерсы vs Акции)
+# ==============================================================================
+def run_diagonal_spread_backtest():
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 5: КРОСС-ДИАГОНАЛЬНЫЙ СПРЕД SBER")
+    print("="*80)
+    np.random.seed(999)
+    dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
+    n_periods = len(dates)
+    
+    sber_prices = 150.0 + np.cumsum(np.random.normal(3.5, 10.0, n_periods))
+    capital = 1000000.0
+    initial_capital = capital
+    commission_its_fut = 0.45
+    
+    trade_log = []
+    equity_curve = []
+    
+    fut_opt_qty = 50
+    prem_opt_qty = 500
+    
+    for i, date in enumerate(dates[:-1]):
+        sber_entry = sber_prices[i]
+        sber_exit = sber_prices[i+1]
+        
+        strike_fut_sell = int(sber_entry)
+        strike_prem_buy = int(sber_entry + 15)
+        
+        prem_fut_opt = 800.0
+        prem_stock_opt = 30.0
+        
+        total_prem_paid = prem_stock_opt * prem_opt_qty
+        broker_fee_stock_opt = max(0.20 * prem_opt_qty, total_prem_paid * 0.02)
+        
+        broker_fee_open = (fut_opt_qty * commission_its_fut) + broker_fee_stock_opt
+        
+        net_inflow = (fut_opt_qty * prem_fut_opt) - total_prem_paid
+        capital += net_inflow - broker_fee_open
+        
+        payoff_fut_sell = max(0, (sber_exit - strike_fut_sell) * 100) * fut_opt_qty
+        payoff_prem_buy = max(0, (sber_exit - strike_prem_buy) * 10) * prem_opt_qty
+        
+        net_payoff = payoff_prem_buy - payoff_fut_sell
+        capital += net_payoff
+        
+        trade_log.append({
+            "Период": date.strftime("%Y-%m"),
+            "SBER Вход": round(sber_entry, 2),
+            "SBER Выход": round(sber_exit, 2),
+            "Чистый Доход": round(net_payoff + net_inflow, 2),
+            "Комиссии": round(broker_fee_open, 2),
+            "Баланс": round(capital, 2)
+        })
+        equity_curve.append(capital)
+        
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 5 ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 5): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    plt.figure(figsize=(10, 5))
+    plt.plot(dates[:-1], equity_curve, color="purple", linewidth=2.5, label="Баланс счета (SBER Diagonal)")
+    plt.title("Изменение счета по Стратегии 5: Кросс-Диагональный Спред SBER")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
+    
+    return dates[:-1], equity_curve
+
+# ==============================================================================
+# ГЛАВНЫЙ ЗАПУСК ВСЕХ 5 СТРАТЕГИЙ
+# ==============================================================================
 if __name__ == "__main__":
     dates1, eq1 = run_funding_arbitrage_backtest()
     dates2, eq2 = run_calendar_futures_backtest()
     dates3, eq3 = run_vertical_spread_backtest()
-    print("\nВсе бэктесты успешно завершены и выведены в формате Google Colab!")
+    dates4, eq4 = run_horizontal_spread_backtest()
+    dates5, eq5 = run_diagonal_spread_backtest()
+    print("\nВсе 5 бэктестов успешно завершены и выведены в формате Google Colab!")
