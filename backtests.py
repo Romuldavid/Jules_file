@@ -5,6 +5,11 @@
 ЧАСТЬ 2: Продвинутый мульти-индикаторный бэктест (Класс AdvancedOptionsBacktest),
          который задействует Z-Score перепроданности/перекупленности, 
          анализ ожидаемой и исторической волатильности (IV/HV) и перекос улыбки (Skew).
+         Реализованы проверки для 4 ключевых активов Московской биржи (MOEX):
+         - Сбербанк (SBRF)
+         - Газпром (GAZR)
+         - Доллар/Рубль (Si)
+         - Индекс РТС (RTS)
 
 Все расчеты настроены под тариф «Стандартный ФОРТС» (0.45 руб. за контракт).
 Период моделирования: 01.01.2023 - 01.08.2026.
@@ -404,7 +409,7 @@ def run_diagonal_spread_backtest():
     return dates[:-1], equity_curve
 
 # ==============================================================================
-# ЧАСТЬ 2: ПРОДВИНУТЫЙ МУЛЬТИ-ИНДИКАТОРНЫЙ БЭКТЕСТ
+# ЧАСТЬ 2: ПРОДВИНУТЫЙ МУЛЬТИ-ИНДИКАТОРНЫЙ БЭКТЕСТ (SBRF, GAZR, Si, RTS)
 # ==============================================================================
 
 class AdvancedOptionsBacktest:
@@ -413,181 +418,220 @@ class AdvancedOptionsBacktest:
     1. Z-Score (Следование за сильным трендом / Momentum).
     2. Волатильный Арбитраж (Сравнение Ожидаемой IV и Исторической HV волатильностей).
     3. Учет тарифа «Стандартный ФОРТС» (0.45 руб. ИТС / 0.90 руб. исполнение).
+    
+    Реализовано независимое тестирование 4 активов на Московской бирже.
+    Для чистоты эксперимента доход на остаток кэша отключен (0.0%).
     """
     def __init__(self, initial_capital=1000000.0):
-        self.capital = initial_capital
         self.initial_capital = initial_capital
         self.commission_its = 0.45
         self.commission_exercise = 0.90
-        self.contracts_qty = 250  
         
-        # Генерация синтетического датасета Sberbank (SBRF) 2023-2026 с волатильностью
+        # Период бэктеста
         np.random.seed(888)
         self.dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
-        n_periods = len(self.dates)
+        self.n_periods = len(self.dates)
         
-        # Симулируем цену фьючерса, историческую волатильность HV и ожидаемую волатильность IV
-        self.prices = 16000 + np.cumsum(np.random.normal(400, 1800, n_periods))
-        self.hv = np.random.uniform(0.15, 0.25, n_periods)  # Реальная историческая волатильность
-        self.iv = self.hv * np.random.uniform(0.8, 1.5, n_periods)  # Ожидаемая волатильность рынка
+        # Конфигурация активов на MOEX
+        self.assets = {
+            "SBRF (Сбербанк)": {
+                "start_price": 16000.0,
+                "vol": 1800.0,
+                "step": 500,
+                "contracts": 250,
+                "prem_scale": 1.0
+            },
+            "GAZR (Газпром)": {
+                "start_price": 17000.0,
+                "vol": 700.0,
+                "step": 250,
+                "contracts": 300,
+                "prem_scale": 0.8
+            },
+            "Si (Доллар/Рубль)": {
+                "start_price": 75000.0,
+                "vol": 4000.0,
+                "step": 1000,
+                "contracts": 100,
+                "prem_scale": 1.5
+            },
+            "RTS (Индекс РТС)": {
+                "start_price": 100000.0,
+                "vol": 6000.0,
+                "step": 2500,
+                "contracts": 80,
+                "prem_scale": 1.8
+            }
+        }
         
-        self.trade_log = []
-        self.equity_curve = []
-        
-    def run(self):
+    def run_for_asset(self, asset_name):
         print("\n" + "="*80)
-        print("ЗАПУСК ПРОДВИНУТОГО МУЛЬТИ-ИНДИКАТОРНОГО БЭКТЕСТА (ЧИСТАЯ СТРАТЕГИЯ)")
+        print(f"ЗАПУСК ПРОДВИНУТОГО БЭКТЕСТА ДЛЯ: {asset_name} (ЧИСТАЯ СТРАТЕГИЯ)")
         print("="*80)
         
-        # Вычисление Z-Score по ценовому ряду
-        prices_series = pd.Series(self.prices)
+        config = self.assets[asset_name]
+        capital = self.initial_capital
+        
+        # Генерация ценового ряда и волатильности
+        np.random.seed(99)
+        prices = config["start_price"] + np.cumsum(np.random.normal(300, config["vol"], self.n_periods))
+        hv = np.random.uniform(0.15, 0.25, self.n_periods)
+        iv = hv * np.random.uniform(0.8, 1.5, self.n_periods)
+        
+        prices_series = pd.Series(prices)
         rolling_mean = prices_series.rolling(window=5, min_periods=1).mean()
-        rolling_std = prices_series.rolling(window=5, min_periods=1).std().fillna(1000)
+        rolling_std = prices_series.rolling(window=5, min_periods=1).std().fillna(config["vol"])
         z_scores = (prices_series - rolling_mean) / rolling_std
         
-        for i in range(len(self.dates) - 1):
+        trade_log = []
+        equity_curve = []
+        contracts_qty = config["contracts"]
+        
+        for i in range(self.n_periods - 1):
             date = self.dates[i]
-            sbrf_entry = self.prices[i]
-            sbrf_exit = self.prices[i+1]
+            entry_p = prices[i]
+            exit_p = prices[i+1]
             z_score = z_scores[i]
-            current_iv = self.iv[i]
-            current_hv = self.hv[i]
+            current_iv = iv[i]
+            current_hv = hv[i]
             
-            # ДЛЯ ЧИСТОТЫ ЭКСПЕРИМЕНТА: Процент на свободный кэш равен 0.0%!
-            self.capital += 0.0
+            # Чистая стратегия (Кэш-ставка = 0.0%)
+            capital += 0.0
             
-            # Условие входа на основе Трендового импульса (Momentum):
-            # Если Z-Score растет (> 0.7), открываем Bull Call Spread.
-            # Если Z-Score падает (< -0.7), открываем Bear Put Spread.
             iv_hv_ratio = current_iv / current_hv
             
+            # Логика Momentum на основе Z-Score
             if z_score > 0.7:
-                direction = "BULL"  
+                direction = "BULL"
             elif z_score < -0.7:
-                direction = "BEAR"  
+                direction = "BEAR"
             else:
-                direction = "NEUTRAL"  
+                direction = "NEUTRAL"
                 
-            broker_fee_open = 0.0
+            broker_fee_open = (contracts_qty * 2) * self.commission_its
             broker_fee_exit = 0.0
             net_payoff = 0.0
             net_premium_paid = 0.0
             period_profit = 0.0
             
-            strike_buy = int(sbrf_entry // 500) * 500
+            strike_buy = int(entry_p // config["step"]) * config["step"]
             
             if direction == "BULL":
-                strike_sell = strike_buy + 1500
-                prem_buy = 600.0 * (iv_hv_ratio)
-                prem_sell = 200.0 * (iv_hv_ratio)
-                net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
-                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
+                strike_sell = strike_buy + int(config["step"] * 3)
+                prem_buy = 600.0 * iv_hv_ratio * config["prem_scale"]
+                prem_sell = 200.0 * iv_hv_ratio * config["prem_scale"]
+                net_premium_paid = (prem_buy - prem_sell) * contracts_qty
                 
-                self.capital -= (net_premium_paid + broker_fee_open)
+                capital -= (net_premium_paid + broker_fee_open)
                 
-                payoff_buy = max(0, sbrf_exit - strike_buy) * self.contracts_qty
-                payoff_sell = max(0, sbrf_exit - strike_sell) * self.contracts_qty
+                payoff_buy = max(0, exit_p - strike_buy) * contracts_qty
+                payoff_sell = max(0, exit_p - strike_sell) * contracts_qty
                 net_payoff = payoff_buy - payoff_sell
                 
-                if sbrf_exit > strike_buy:
-                    broker_fee_exit += self.contracts_qty * self.commission_exercise
-                if sbrf_exit > strike_sell:
-                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                if exit_p > strike_buy:
+                    broker_fee_exit += contracts_qty * self.commission_exercise
+                if exit_p > strike_sell:
+                    broker_fee_exit += contracts_qty * self.commission_exercise
                     
                 period_profit = net_payoff - broker_fee_exit
-                self.capital += period_profit
+                capital += period_profit
                 
             elif direction == "BEAR":
-                strike_sell = strike_buy - 1500
-                prem_buy = 600.0 * (iv_hv_ratio)
-                prem_sell = 200.0 * (iv_hv_ratio)
-                net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
-                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
+                strike_sell = strike_buy - int(config["step"] * 3)
+                prem_buy = 600.0 * iv_hv_ratio * config["prem_scale"]
+                prem_sell = 200.0 * iv_hv_ratio * config["prem_scale"]
+                net_premium_paid = (prem_buy - prem_sell) * contracts_qty
                 
-                self.capital -= (net_premium_paid + broker_fee_open)
+                capital -= (net_premium_paid + broker_fee_open)
                 
-                payoff_buy = max(0, strike_buy - sbrf_exit) * self.contracts_qty
-                payoff_sell = max(0, strike_sell - sbrf_exit) * self.contracts_qty
+                payoff_buy = max(0, strike_buy - exit_p) * contracts_qty
+                payoff_sell = max(0, strike_sell - exit_p) * contracts_qty
                 net_payoff = payoff_buy - payoff_sell
                 
-                if sbrf_exit < strike_buy:
-                    broker_fee_exit += self.contracts_qty * self.commission_exercise
-                if sbrf_exit < strike_sell:
-                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                if exit_p < strike_buy:
+                    broker_fee_exit += contracts_qty * self.commission_exercise
+                if exit_p < strike_sell:
+                    broker_fee_exit += contracts_qty * self.commission_exercise
                     
                 period_profit = net_payoff - broker_fee_exit
-                self.capital += period_profit
+                capital += period_profit
                 
             else:
-                # NEUTRAL: Календарный спред (собираем распад времени)
-                prem_sell_near = 300.0 * (iv_hv_ratio)
-                prem_buy_far = 800.0 * (iv_hv_ratio)
-                net_premium_paid = (prem_buy_far - prem_sell_near) * self.contracts_qty
-                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
+                # NEUTRAL: Календарный спред
+                prem_sell_near = 300.0 * iv_hv_ratio * config["prem_scale"]
+                prem_buy_far = 800.0 * iv_hv_ratio * config["prem_scale"]
+                net_premium_paid = (prem_buy_far - prem_sell_near) * contracts_qty
                 
-                self.capital -= (net_premium_paid + broker_fee_open)
+                capital -= (net_premium_paid + broker_fee_open)
                 
-                payoff_near = max(0, sbrf_exit - strike_buy) * self.contracts_qty
-                val_far = (max(0, sbrf_exit - strike_buy) + 650.0) * self.contracts_qty
+                payoff_near = max(0, exit_p - strike_buy) * contracts_qty
+                val_far = (max(0, exit_p - strike_buy) + (config["step"] * 1.3)) * contracts_qty
                 net_payoff = val_far - payoff_near
                 
-                if sbrf_exit > strike_buy:
-                    broker_fee_exit += self.contracts_qty * self.commission_exercise
+                if exit_p > strike_buy:
+                    broker_fee_exit += contracts_qty * self.commission_exercise
                     
                 period_profit = net_payoff - broker_fee_exit
-                self.capital += period_profit
+                capital += period_profit
                 
-            self.trade_log.append({
+            trade_log.append({
                 "Дата": date.strftime("%Y-%m"),
-                "SBRF Вход": int(sbrf_entry),
-                "SBRF Выход": int(sbrf_exit),
+                "Вход": int(entry_p),
+                "Выход": int(exit_p),
                 "Z-Score": round(z_score, 2),
-                "Отношение IV/HV": round(iv_hv_ratio, 2),
                 "Направление": direction,
-                "Чистый Профит": round(period_profit - net_premium_paid, 2),
+                "Профит": round(period_profit - net_premium_paid, 2),
                 "Комиссия": round(broker_fee_open + broker_fee_exit, 2),
-                "Баланс": round(self.capital, 2)
+                "Баланс": round(capital, 2)
             })
-            self.equity_curve.append(self.capital)
+            equity_curve.append(capital)
             
-        df_log = pd.DataFrame(self.trade_log)
-        print("\n--- СИСТЕМНЫЙ ЖУРНАЛ СДЕЛКИ (ПРОДВИНУТЫЙ МИКС-БЭКТЕСТ) ---")
+        df_log = pd.DataFrame(trade_log)
+        print(f"\n--- СИСТЕМНЫЙ ЖУРНАЛ СДЕЛКИ ({asset_name}) ---")
         print(df_log.to_string(index=False))
         
-        total_return = (self.capital - self.initial_capital) / self.initial_capital * 100
+        total_return = (capital - self.initial_capital) / self.initial_capital * 100
         days_total = (self.dates[-1] - self.dates[0]).days
         apy = total_return * (365.0 / days_total)
         
         print("\n" + "-"*40)
-        print(f"Итоговый баланс (Продвинутый бэктест): {round(self.capital, 2)} руб.")
+        print(f"Итоговый баланс ({asset_name}): {round(capital, 2)} руб.")
         print(f"Общая доходность: {round(total_return, 2)}%")
         print(f"Доходность в годовых (APY): {round(apy, 2)}%")
         print("-"*40 + "\n")
         
-        # Отрисовка графика
-        plt.figure(figsize=(12, 6))
-        plt.plot(self.dates[:-1], self.equity_curve, color="darkorange", linewidth=2.5, marker="D", label="Баланс счета (Z-Score + IV/HV)")
-        plt.title("Изменение счета по Продвинутому Опционному Бэктесту на SBRF (2023-2026)")
+        return self.dates[:-1], equity_curve
+
+    def run(self):
+        # Запускаем проверку последовательно для каждого из 4 активов MOEX
+        results = {}
+        for asset in self.assets.keys():
+            dates, eq = self.run_for_asset(asset)
+            results[asset] = eq
+            
+        # Построение общего графика сравнения
+        plt.figure(figsize=(14, 7))
+        for asset, eq in results.items():
+            plt.plot(self.dates[:-1], eq, linewidth=2.5, marker="o", label=f"Баланс {asset}")
+        plt.title("Сравнение доходности чистой опционной стратегии по разным активам MOEX (2023-2026)")
         plt.xlabel("Дата")
         plt.ylabel("Баланс счета, руб.")
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.legend()
         plt.show()
-        
-        return self.dates[:-1], self.equity_curve
 
 # ==============================================================================
 # ГЛАВНЫЙ ЗАПУСК
 # ==============================================================================
 if __name__ == "__main__":
-    # 1. Запуск базовых бэктестов
+    # 1. Запуск базовых бэктестов (ЧАСТЬ 1)
     run_funding_arbitrage_backtest()
     run_calendar_futures_backtest()
     run_vertical_spread_backtest()
     run_horizontal_spread_backtest()
     run_diagonal_spread_backtest()
     
-    # 2. Запуск продвинутого мульти-индикаторного бэктеста (ЧАСТЬ 2)
+    # 2. Запуск продвинутого мульти-активного бэктеста (ЧАСТЬ 2)
     adv_test = AdvancedOptionsBacktest()
     adv_test.run()
     
