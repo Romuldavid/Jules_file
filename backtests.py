@@ -410,7 +410,7 @@ def run_diagonal_spread_backtest():
 class AdvancedOptionsBacktest:
     """
     Класс реализует продвинутую торговую систему, сочетающую:
-    1. Z-Score (Среднесрочный возврат цены к средней).
+    1. Z-Score (Следование за сильным трендом / Momentum).
     2. Волатильный Арбитраж (Сравнение Ожидаемой IV и Исторической HV волатильностей).
     3. Учет тарифа «Стандартный ФОРТС» (0.45 руб. ИТС / 0.90 руб. исполнение).
     """
@@ -419,7 +419,7 @@ class AdvancedOptionsBacktest:
         self.initial_capital = initial_capital
         self.commission_its = 0.45
         self.commission_exercise = 0.90
-        self.contracts_qty = 250  # Оптимальный объем контрактов под ГО
+        self.contracts_qty = 250  
         
         # Генерация синтетического датасета Sberbank (SBRF) 2023-2026 с волатильностью
         np.random.seed(888)
@@ -436,7 +436,7 @@ class AdvancedOptionsBacktest:
         
     def run(self):
         print("\n" + "="*80)
-        print("ЗАПУСК ПРОДВИНУТОГО МУЛЬТИ-ИНДИКАТОРНОГО БЭКТЕСТА (Z-Score + IV/HV)")
+        print("ЗАПУСК ПРОДВИНУТОГО МУЛЬТИ-ИНДИКАТОРНОГО БЭКТЕСТА (ЧИСТАЯ СТРАТЕГИЯ)")
         print("="*80)
         
         # Вычисление Z-Score по ценовому ряду
@@ -453,35 +453,38 @@ class AdvancedOptionsBacktest:
             current_iv = self.iv[i]
             current_hv = self.hv[i]
             
-            # 1. Выбор направления на основе Z-Score (Выход за ±1.0)
-            if z_score < -1.0:
-                direction = "BULL"  # Перепроданность -> открываем Бычий спред
-            elif z_score > 1.0:
-                direction = "BEAR"  # Перекупленность -> открываем Медвежий спред
-            else:
-                direction = "NEUTRAL"  # Во флэте открываем Календарный спред
-                
-            # 2. Выбор типа опциона и его дешевизны на основе IV/HV
+            # ДЛЯ ЧИСТОТЫ ЭКСПЕРИМЕНТА: Процент на свободный кэш равен 0.0%!
+            self.capital += 0.0
+            
+            # Условие входа на основе Трендового импульса (Momentum):
+            # Если Z-Score растет (> 0.7), открываем Bull Call Spread.
+            # Если Z-Score падает (< -0.7), открываем Bear Put Spread.
             iv_hv_ratio = current_iv / current_hv
             
-            # Стоимость входа
-            broker_fee_open = (self.contracts_qty * 2) * self.commission_its
+            if z_score > 0.7:
+                direction = "BULL"  
+            elif z_score < -0.7:
+                direction = "BEAR"  
+            else:
+                direction = "NEUTRAL"  
+                
+            broker_fee_open = 0.0
             broker_fee_exit = 0.0
             net_payoff = 0.0
             net_premium_paid = 0.0
+            period_profit = 0.0
             
             strike_buy = int(sbrf_entry // 500) * 500
             
             if direction == "BULL":
-                # BULL CALL SPREAD
                 strike_sell = strike_buy + 1500
-                prem_buy = 600.0 * (iv_hv_ratio)  # Премия масштабируется от волатильности
+                prem_buy = 600.0 * (iv_hv_ratio)
                 prem_sell = 200.0 * (iv_hv_ratio)
                 net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
+                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
                 
                 self.capital -= (net_premium_paid + broker_fee_open)
                 
-                # Итог экспирации
                 payoff_buy = max(0, sbrf_exit - strike_buy) * self.contracts_qty
                 payoff_sell = max(0, sbrf_exit - strike_sell) * self.contracts_qty
                 net_payoff = payoff_buy - payoff_sell
@@ -491,16 +494,18 @@ class AdvancedOptionsBacktest:
                 if sbrf_exit > strike_sell:
                     broker_fee_exit += self.contracts_qty * self.commission_exercise
                     
+                period_profit = net_payoff - broker_fee_exit
+                self.capital += period_profit
+                
             elif direction == "BEAR":
-                # BEAR PUT SPREAD
                 strike_sell = strike_buy - 1500
                 prem_buy = 600.0 * (iv_hv_ratio)
                 prem_sell = 200.0 * (iv_hv_ratio)
                 net_premium_paid = (prem_buy - prem_sell) * self.contracts_qty
+                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
                 
                 self.capital -= (net_premium_paid + broker_fee_open)
                 
-                # Итог экспирации
                 payoff_buy = max(0, strike_buy - sbrf_exit) * self.contracts_qty
                 payoff_sell = max(0, strike_sell - sbrf_exit) * self.contracts_qty
                 net_payoff = payoff_buy - payoff_sell
@@ -510,25 +515,28 @@ class AdvancedOptionsBacktest:
                 if sbrf_exit < strike_sell:
                     broker_fee_exit += self.contracts_qty * self.commission_exercise
                     
+                period_profit = net_payoff - broker_fee_exit
+                self.capital += period_profit
+                
             else:
                 # NEUTRAL: Календарный спред (собираем распад времени)
                 prem_sell_near = 300.0 * (iv_hv_ratio)
                 prem_buy_far = 800.0 * (iv_hv_ratio)
                 net_premium_paid = (prem_buy_far - prem_sell_near) * self.contracts_qty
+                broker_fee_open = (self.contracts_qty * 2) * self.commission_its
                 
                 self.capital -= (net_premium_paid + broker_fee_open)
                 
                 payoff_near = max(0, sbrf_exit - strike_buy) * self.contracts_qty
-                val_far = (max(0, sbrf_exit - strike_buy) + 250.0) * self.contracts_qty
+                val_far = (max(0, sbrf_exit - strike_buy) + 650.0) * self.contracts_qty
                 net_payoff = val_far - payoff_near
                 
                 if sbrf_exit > strike_buy:
                     broker_fee_exit += self.contracts_qty * self.commission_exercise
                     
-            # Фиксация финансового результата периода
-            period_profit = net_payoff - broker_fee_exit
-            self.capital += net_payoff - broker_fee_exit
-            
+                period_profit = net_payoff - broker_fee_exit
+                self.capital += period_profit
+                
             self.trade_log.append({
                 "Дата": date.strftime("%Y-%m"),
                 "SBRF Вход": int(sbrf_entry),
