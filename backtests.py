@@ -14,7 +14,9 @@ import matplotlib.pyplot as plt
 # СТРАТЕГИЯ 1: Арбитраж ставки фандинга (Perpetual Futures vs Spot)
 # ==============================================================================
 def run_funding_arbitrage_backtest():
-    print("\n--- Запуск Бэктеста 1: Арбитраж Фандинга ---")
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 1: АРБИТРАЖ СТАВКИ ФАНДИНГА (Perpetual vs Spot)")
+    print("="*80)
     np.random.seed(42)
     dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="D")
     n_days = len(dates)
@@ -47,9 +49,10 @@ def run_funding_arbitrage_backtest():
             position_opened = True
             trade_log.append({
                 "Дата": date.strftime("%Y-%m-%d"),
-                "Сделка": "ВХОД",
+                "Сделка": "ВХОД (ПОКУПКА SPOT / ШОРТ USDRUBF)",
                 "Контракты": num_contracts,
-                "Курс": round(spot_price, 2),
+                "Курс Spot": round(spot_price, 2),
+                "Ставка фандинга (% год)": round(annual_funding * 100, 2),
                 "Комиссия": round(broker_fee, 2),
                 "Баланс": round(capital, 2)
             })
@@ -57,17 +60,69 @@ def run_funding_arbitrage_backtest():
         if position_opened:
             daily_funding_gain = (num_contracts * 1000 * spot_price) * daily_funding_rate
             capital += daily_funding_gain
+            # Логируем периодически или при сильном изменении ставки
+            if i % 180 == 0:
+                trade_log.append({
+                    "Дата": date.strftime("%Y-%m-%d"),
+                    "Сделка": "НАЧИСЛЕНИЕ ФАНДИНГА (УДЕРЖАНИЕ)",
+                    "Контракты": num_contracts,
+                    "Курс Spot": round(spot_price, 2),
+                    "Ставка фандинга (% год)": round(annual_funding * 100, 2),
+                    "Комиссия": 0.0,
+                    "Баланс": round(capital, 2)
+                })
             
         equity_curve.append(capital)
         
-    print(f"Финальный Баланс: {round(capital, 2)} руб.")
+    # Выход в конце периода
+    spot_val = num_contracts * 1000 * spot_prices[-1]
+    exit_broker_fee = (num_contracts * commission_its) + (spot_val * commission_spot)
+    capital -= exit_broker_fee
+    trade_log.append({
+        "Дата": dates[-1].strftime("%Y-%m-%d"),
+        "Сделка": "ВЫХОД (ФИКСАЦИЯ И ЗАКРЫТИЕ)",
+        "Контракты": num_contracts,
+        "Курс Spot": round(spot_prices[-1], 2),
+        "Ставка фандинга (% год)": round(funding_rates_annual[-1] * 100, 2),
+        "Комиссия": round(exit_broker_fee, 2),
+        "Баланс": round(capital, 2)
+    })
+    equity_curve[-1] = capital
+    
+    # Печать журнала сделок
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 1 ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 1): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    # Построение графика
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, equity_curve, color="green", linewidth=2.5, label="Баланс счета (Фандинг)")
+    plt.title("Изменение счета по Стратегии 1: Арбитраж Фандинга (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
+    
     return dates, equity_curve
 
 # ==============================================================================
 # СТРАТЕГИЯ 2: Календарный спред фьючерсов (CNY-9.26 vs CNY-12.26)
 # ==============================================================================
 def run_calendar_futures_backtest():
-    print("\n--- Запуск Бэктеста 2: Календарный Спред Фьючерсов ---")
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 2: КАЛЕНДАРНЫЙ СПРЕД ФЬЮЧЕРСОВ (CNY)")
+    print("="*80)
     np.random.seed(100)
     dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="D")
     n_days = len(dates)
@@ -78,10 +133,12 @@ def run_calendar_futures_backtest():
     far_prices = near_prices * (1.0 + implied_spread_annual * (90.0/365.0))
     
     capital = 1000000.0
+    initial_capital = capital
     position_opened = False
     commission_its = 0.45
     num_contracts = 250
     
+    trade_log = []
     equity_curve = []
     
     for i, date in enumerate(dates):
@@ -94,33 +151,79 @@ def run_calendar_futures_backtest():
             capital -= broker_fee
             position_opened = True
             entry_spread = far_p - near_p
+            trade_log.append({
+                "Дата": date.strftime("%Y-%m-%d"),
+                "Сделка": "ВХОД (ПРОДАЖА СПРЕДА)",
+                "Цена Ближнего": round(near_p, 2),
+                "Цена Дальнего": round(far_p, 2),
+                "Спред (руб)": round(entry_spread, 3),
+                "Контанго (% год)": round(spread_pct_annual * 100, 2),
+                "Комиссия": round(broker_fee, 2),
+                "Баланс": round(capital, 2)
+            })
         elif position_opened and spread_pct_annual < 0.13:
             exit_spread = far_p - near_p
             profit = (entry_spread - exit_spread) * num_contracts * 1000
             broker_fee = num_contracts * 2 * commission_its
             capital += profit - broker_fee
             position_opened = False
+            trade_log.append({
+                "Дата": date.strftime("%Y-%m-%d"),
+                "Сделка": "ВЫХОД (ФИКСАЦИЯ ПРИБЫЛИ)",
+                "Цена Ближнего": round(near_p, 2),
+                "Цена Дальнего": round(far_p, 2),
+                "Спред (руб)": round(exit_spread, 3),
+                "Контанго (% год)": round(spread_pct_annual * 100, 2),
+                "Комиссия": round(broker_fee, 2),
+                "Баланс": round(capital, 2)
+            })
             
         equity_curve.append(capital)
         
-    print(f"Финальный Баланс: {round(capital, 2)} руб.")
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 2 ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 2): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, equity_curve, color="blue", linewidth=2.5, label="Баланс счета (Календарный Спред)")
+    plt.title("Изменение счета по Стратегии 2: Календарный Спред CNY (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
+    
     return dates, equity_curve
 
 # ==============================================================================
 # СТРАТЕГИЯ 3: Вертикальный Bull Call Спред на фьючерсы Sberbank (SBRF)
 # ==============================================================================
 def run_vertical_spread_backtest():
-    print("\n--- Запуск Бэктеста 3: Вертикальный Call Спред SBRF ---")
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 3: ВЕРТИКАЛЬНЫЙ CALL СПРЕД SBRF")
+    print("="*80)
     np.random.seed(2023)
     dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
     n_periods = len(dates)
     
     sbrf_prices = 15000 + np.cumsum(np.random.normal(500, 1500, n_periods))
     capital = 1000000.0
+    initial_capital = capital
     commission_its = 0.45
     commission_exercise = 0.90
     contracts_qty = 300
     
+    trade_log = []
     equity_curve = []
     
     for i, date in enumerate(dates[:-1]):
@@ -148,13 +251,46 @@ def run_vertical_spread_backtest():
             broker_fee_exit += contracts_qty * commission_exercise
             
         capital += net_payoff - broker_fee_exit
+        
+        trade_log.append({
+            "Период": date.strftime("%Y-%m"),
+            "SBRF Вход": int(sbrf_entry),
+            "SBRF Выход": int(sbrf_exit),
+            "Куплен Call": strike_buy,
+            "Продан Call": strike_sell,
+            "Доходность спреда": round(net_payoff, 2),
+            "Комиссии": round(broker_fee_open + broker_fee_exit, 2),
+            "Баланс": round(capital, 2)
+        })
         equity_curve.append(capital)
         
-    print(f"Финальный Баланс: {round(capital, 2)} руб.")
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 3 ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 3): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates[:-1], equity_curve, color="purple", linewidth=2.5, label="Баланс счета (SBRF Option Spread)")
+    plt.title("Изменение счета по Стратегии 3: Вертикальный Спред SBRF (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
+    
     return dates[:-1], equity_curve
 
 if __name__ == "__main__":
     dates1, eq1 = run_funding_arbitrage_backtest()
     dates2, eq2 = run_calendar_futures_backtest()
     dates3, eq3 = run_vertical_spread_backtest()
-    print("\nВсе бэктесты успешно завершены!")
+    print("\nВсе бэктесты успешно завершены и выведены в формате Google Colab!")
