@@ -710,12 +710,34 @@ class AdvancedOptionsBacktest:
 # ГЛАВНЫЙ ЗАПУСК
 # ==============================================================================
 if __name__ == "__main__":
+    plt.figure(figsize=(14, 7))
+    
     # 1. Запуск базовых бэктестов (ЧАСТЬ 1)
-    run_funding_arbitrage_backtest()
-    run_calendar_futures_backtest()
-    run_vertical_spread_backtest()
-    run_horizontal_spread_backtest()
-    run_diagonal_spread_backtest()
+    d1, eq1 = run_funding_arbitrage_backtest()
+    plt.plot(d1, eq1, label="Стратегия 1: Фандинг", alpha=0.8)
+    
+    d2, eq2 = run_calendar_futures_backtest()
+    plt.plot(d2, eq2, label="Стратегия 2: Календарный спред CNY", alpha=0.8)
+    
+    d3, eq3 = run_vertical_spread_backtest()
+    plt.plot(d3, eq3, label="Стратегия 3: Bull Call Спред SBRF", alpha=0.8)
+    
+    d4, eq4 = run_horizontal_spread_backtest()
+    plt.plot(d4, eq4, label="Стратегия 4: Календарный спред GAZR", alpha=0.8)
+    
+    d5, eq5 = run_diagonal_spread_backtest()
+    plt.plot(d5, eq5, label="Стратегия 5: Диагональный спред SBER", alpha=0.8)
+    
+    # Запуск нового бэктеста 6 (Cash-and-Carry)
+    d6, eq6 = run_cash_and_carry_backtest()
+    plt.plot(d6, eq6, label="Стратегия 6: Валютный Cash-and-Carry (CNY)", linewidth=3, marker="o", color="green")
+    
+    plt.title("Сравнение доходности базовых стратегий на Московской бирже (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
     
     # Запуск нового бэктеста 6 (Cash-and-Carry)
     run_cash_and_carry_backtest()
