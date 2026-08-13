@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Файл содержит две части:
-ЧАСТЬ 1: Базовые 5 бэктестов для Google Colab (Фандинг, Календари, Спреды).
+ЧАСТЬ 1: Базовые бэктесты для Google Colab (Фандинг, Календари, Спреды + Cash-and-Carry).
 ЧАСТЬ 2: Продвинутый мульти-индикаторный бэктест (Класс AdvancedOptionsBacktest),
          который задействует Z-Score перепроданности/перекупленности, 
          анализ ожидаемой и исторической волатильности (IV/HV) и перекос улыбки (Skew).
@@ -21,7 +21,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ==============================================================================
-# ЧАСТЬ 1: БАЗОВЫЕ 5 БЭКТЕСТОВ
+# ЧАСТЬ 1: БАЗОВЫЕ БЭКТЕСТЫ
 # ==============================================================================
 
 # 1. Арбитраж ставки фандинга (Perpetual Futures vs Spot)
@@ -409,6 +409,92 @@ def run_diagonal_spread_backtest():
     return dates[:-1], equity_curve
 
 # ==============================================================================
+# СТРАТЕГИЯ 6 (НОВАЯ): Валютный Cash-and-Carry (Спот CNY_TOM против Фьючерса)
+# ==============================================================================
+def run_cash_and_carry_backtest():
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 6: ВАЛЮТНЫЙ CASH-AND-CARRY (CNY_TOM vs CNY-)")
+    print("="*80)
+    np.random.seed(12345)
+    
+    # Моделирование квартальных циклов (4 квартала в год, 14 кварталов всего)
+    dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="QE")
+    n_quarters = len(dates)
+    
+    # Моделирование цен: спот юаня и фьючерса (закладываем контанго ~15-20% годовых из-за ставок)
+    spot_prices = 11.0 + np.cumsum(np.random.normal(0.2, 0.5, n_quarters))
+    contango_rate_annual = np.random.uniform(0.14, 0.22, n_quarters)
+    futures_prices = spot_prices * (1.0 + contango_rate_annual * 0.25) # 0.25 года до экспирации
+    
+    capital = 1000000.0
+    initial_capital = capital
+    commission_its = 0.45   # ваш тариф ФОРТС за фьючерс
+    commission_spot = 0.0005 # 0.05% от объема покупки спот юаня
+    
+    trade_log = []
+    equity_curve = []
+    
+    # Каждые 3 месяца (квартал) мы открываем арбитраж и держим до экспирации
+    for i in range(n_quarters):
+        date = dates[i]
+        spot_entry = spot_prices[i]
+        fut_entry = futures_prices[i]
+        
+        # Объем позиции (используем 80% от капитала для покупки спота, 20% резерв под ГО фьючерса)
+        allocated_capital = capital * 0.80
+        num_contracts = int(allocated_capital / (spot_entry * 1000))
+        if num_contracts == 0: num_contracts = 1
+        
+        # Шаг 1: Покупка спот CNY_TOM
+        spot_cost = num_contracts * 1000 * spot_entry
+        spot_fee = spot_cost * commission_spot
+        
+        # Шаг 2: Продажа фьючерса CNY на FORTS
+        fut_fee_open = num_contracts * commission_its
+        
+        # Списание комиссий за вход
+        capital -= (spot_fee + fut_fee_open)
+        
+        # Шаг 3: Удержание позиции до экспирации
+        # На момент экспирации цена фьючерса сближается со спотом (F_expire = S_expire)
+        # Наша зафиксированная премия равна разнице входа: (F_entry - S_entry)
+        gross_premium = (fut_entry - spot_entry) * num_contracts * 1000
+        
+        # Комиссия за расчет/экспирацию фьючерса на FORTS
+        fut_fee_close = num_contracts * commission_its
+        
+        # Начисление зафиксированной безрисковой премии
+        capital += gross_premium - fut_fee_close
+        
+        trade_log.append({
+            "Квартал": date.strftime("%Y-Q%q"),
+            "Спот Вход": round(spot_entry, 3),
+            "Фьючерс Вход": round(fut_entry, 3),
+            "Премия (коп)": round((fut_entry - spot_entry) * 100, 1),
+            "Контракты": num_contracts,
+            "Чистый Доход": round(gross_premium - (spot_fee + fut_fee_open + fut_fee_close), 2),
+            "Комиссии": round(spot_fee + fut_fee_open + fut_fee_close, 2),
+            "Баланс": round(capital, 2)
+        })
+        equity_curve.append(capital)
+        
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 6 (CASH-AND-CARRY) ---")
+    print(df_log.to_string(index=False))
+    
+    total_return = (capital - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Стратегия 6): {round(capital, 2)} руб.")
+    print(f"Общая доходность: {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print("-"*40 + "\n")
+    
+    return dates, equity_curve
+
+# ==============================================================================
 # ЧАСТЬ 2: ПРОДВИНУТЫЙ МУЛЬТИ-ИНДИКАТОРНЫЙ БЭКТЕСТ (SBRF, GAZR, Si, RTS)
 # ==============================================================================
 
@@ -630,6 +716,9 @@ if __name__ == "__main__":
     run_vertical_spread_backtest()
     run_horizontal_spread_backtest()
     run_diagonal_spread_backtest()
+    
+    # Запуск нового бэктеста 6 (Cash-and-Carry)
+    run_cash_and_carry_backtest()
     
     # 2. Запуск продвинутого мульти-активного бэктеста (ЧАСТЬ 2)
     adv_test = AdvancedOptionsBacktest()
