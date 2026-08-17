@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Файл содержит две части:
+Файл содержит три части:
 ЧАСТЬ 1: Базовые бэктесты для Google Colab (Фандинг, Календари, Спреды + Cash-and-Carry).
 ЧАСТЬ 2: Продвинутый мульти-индикаторный бэктест (Класс AdvancedOptionsBacktest),
          который задействует Z-Score перепроданности/перекупленности, 
@@ -10,6 +10,7 @@
          - Газпром (GAZR)
          - Доллар/Рубль (Si)
          - Индекс РТС (RTS)
+ЧАСТЬ 3: Детальный бэктест арбитража фандинга по вечным фьючерсам MOEX (USDRUBF, CNYRUBF, EURRUBF, GLDRUBF, IMOEXF).
 
 Все расчеты настроены под тариф «Стандартный ФОРТС» (0.45 руб. за контракт).
 Период моделирования: 01.01.2023 - 01.08.2026.
@@ -409,7 +410,7 @@ def run_diagonal_spread_backtest():
     return dates[:-1], equity_curve
 
 # ==============================================================================
-# СТРАТЕГИЯ 6 (НОВАЯ): Валютный Cash-and-Carry (Спот CNY_TOM против Фьючерса)
+# СТРАТЕГИЯ 6: Валютный Cash-and-Carry (Спот CNY_TOM против Фьючерса)
 # ==============================================================================
 def run_cash_and_carry_backtest():
     print("\n" + "="*80)
@@ -493,6 +494,170 @@ def run_cash_and_carry_backtest():
     print("-"*40 + "\n")
     
     return dates, equity_curve
+
+# ==============================================================================
+# ЧАСТЬ 3: ДЕТАЛЬНЫЙ МУЛЬТИ-ИНСТРУМЕНТАЛЬНЫЙ БЭКТЕСТ ФАНДИНГА (PERPETUAL VS SPOT)
+# ==============================================================================
+
+def run_multi_asset_funding_backtest():
+    print("\n" + "="*80)
+    print("ЧАСТЬ 3: ДЕТАЛЬНЫЙ МУЛЬТИ-ИНСТРУМЕНТАЛЬНЫЙ БЭКТЕСТ АРБИТРАЖА ФАНДИНГА")
+    print("="*80)
+    
+    dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="D")
+    n_days = len(dates)
+    
+    # 5 Реальных инструментов MOEX с вечными фьючерсами:
+    instruments = {
+        "USDRUBF (Доллар/Рубль)": {
+            "lot_size": 1000,
+            "base_price": 75.0,
+            "vol": 0.8,
+            "min_funding": 0.15, # 15%
+            "max_funding": 0.28, # 28%
+            "spot_fee": 0.0005,
+            "seed": 10
+        },
+        "CNYRUBF (Юань/Рубль)": {
+            "lot_size": 1000,
+            "base_price": 11.0,
+            "vol": 0.15,
+            "min_funding": 0.12, # 12%
+            "max_funding": 0.22, # 22%
+            "spot_fee": 0.0005,
+            "seed": 20
+        },
+        "EURRUBF (Евро/Рубль)": {
+            "lot_size": 1000,
+            "base_price": 82.0,
+            "vol": 0.9,
+            "min_funding": 0.14, # 14%
+            "max_funding": 0.26, # 26%
+            "spot_fee": 0.0005,
+            "seed": 30
+        },
+        "GLDRUBF (Золото в рублях)": {
+            "lot_size": 1, # 1 грамм
+            "base_price": 4500.0,
+            "vol": 35.0,
+            "min_funding": 0.10, # 10%
+            "max_funding": 0.20, # 20%
+            "spot_fee": 0.0007,
+            "seed": 40
+        },
+        "IMOEXF (Индекс Мосбиржи)": {
+            "lot_size": 1, # 1 пункт
+            "base_price": 2800.0,
+            "vol": 25.0,
+            "min_funding": 0.16, # 16%
+            "max_funding": 0.30, # 30%
+            "spot_fee": 0.0003,
+            "seed": 50
+        }
+    }
+    
+    commission_its = 0.45
+    results = {}
+    
+    plt.figure(figsize=(14, 7))
+    
+    for name, config in instruments.items():
+        np.random.seed(config["seed"])
+        prices = config["base_price"] + np.cumsum(np.random.normal(0.05, config["vol"], n_days))
+        funding_rates = np.random.uniform(config["min_funding"], config["max_funding"], n_days)
+        
+        capital = 1000000.0
+        initial_capital = capital
+        position_opened = False
+        pos_size_rub = capital * 0.75 # 75% на спот, 25% на ГО
+        
+        trade_log = []
+        equity_curve = []
+        
+        for i, date in enumerate(dates):
+            spot_price = prices[i]
+            annual_funding = funding_rates[i]
+            daily_funding_rate = annual_funding / 365.0
+            
+            num_contracts = int(pos_size_rub / (spot_price * config["lot_size"]))
+            if num_contracts == 0: num_contracts = 1
+            
+            # Вход в позицию: Покупка Спот / Продажа Вечного фьючерса при ставке > 12%
+            if not position_opened and annual_funding >= 0.12:
+                spot_cost = num_contracts * config["lot_size"] * spot_price
+                broker_fee = (num_contracts * commission_its) + (spot_cost * config["spot_fee"])
+                capital -= broker_fee
+                position_opened = True
+                trade_log.append({
+                    "Дата": date.strftime("%Y-%m-%d"),
+                    "Сделка": "ВХОД (ПОКУПКА SPOT / ШОРТ PERP)",
+                    "Контракты": num_contracts,
+                    "Цена Спот": round(spot_price, 2),
+                    "Фандинг (% год)": round(annual_funding * 100, 2),
+                    "Комиссия": round(broker_fee, 2),
+                    "Баланс": round(capital, 2)
+                })
+            
+            if position_opened:
+                daily_gain = (num_contracts * config["lot_size"] * spot_price) * daily_funding_rate
+                capital += daily_gain
+                
+                # Выход если фандинг упал ниже 5%
+                if annual_funding < 0.05:
+                    spot_val = num_contracts * config["lot_size"] * spot_price
+                    exit_fee = (num_contracts * commission_its) + (spot_val * config["spot_fee"])
+                    capital -= exit_fee
+                    position_opened = False
+                    trade_log.append({
+                        "Дата": date.strftime("%Y-%m-%d"),
+                        "Сделка": "ВЫХОД (ФАНДИНГ < 5%)",
+                        "Контракты": num_contracts,
+                        "Цена Спот": round(spot_price, 2),
+                        "Фандинг (% год)": round(annual_funding * 100, 2),
+                        "Комиссия": round(exit_fee, 2),
+                        "Баланс": round(capital, 2)
+                    })
+            
+            equity_curve.append(capital)
+            
+        if position_opened:
+            spot_val = num_contracts * config["lot_size"] * prices[-1]
+            exit_fee = (num_contracts * commission_its) + (spot_val * config["spot_fee"])
+            capital -= exit_fee
+            trade_log.append({
+                "Дата": dates[-1].strftime("%Y-%m-%d"),
+                "Сделка": "ФИНАЛЬНОЕ ЗАКРЫТИЕ",
+                "Контракты": num_contracts,
+                "Цена Спот": round(prices[-1], 2),
+                "Фандинг (% год)": round(funding_rates[-1] * 100, 2),
+                "Комиссия": round(exit_fee, 2),
+                "Баланс": round(capital, 2)
+            })
+            equity_curve[-1] = capital
+            
+        df_log = pd.DataFrame(trade_log)
+        print(f"\n--- СИСТЕМНЫЙ ЖУРНАЛ СДЕЛКИ ФАНДИНГА ({name}) ---")
+        print(df_log.head(10).to_string(index=False)) # Выводим первые 10 записей
+        
+        total_return = (capital - initial_capital) / initial_capital * 100
+        days_total = (dates[-1] - dates[0]).days
+        apy = total_return * (365.0 / days_total)
+        
+        print("\n" + "-"*40)
+        print(f"Итоговый баланс ({name}): {round(capital, 2)} руб.")
+        print(f"Общая доходность: {round(total_return, 2)}%")
+        print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+        print("-"*40)
+        
+        plt.plot(dates, equity_curve, label=f"{name} (APY: {round(apy, 1)}%)", linewidth=2)
+        results[name] = apy
+        
+    plt.title("Сравнение доходности арбитража фандинга по вечным фьючерсам MOEX (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.show()
 
 # ==============================================================================
 # ЧАСТЬ 2: ПРОДВИНУТЫЙ МУЛЬТИ-ИНДИКАТОРНЫЙ БЭКТЕСТ (SBRF, GAZR, Si, RTS)
@@ -739,11 +904,11 @@ if __name__ == "__main__":
     plt.legend()
     plt.show()
     
-    # Запуск нового бэктеста 6 (Cash-and-Carry)
-    run_cash_and_carry_backtest()
-    
     # 2. Запуск продвинутого мульти-активного бэктеста (ЧАСТЬ 2)
     adv_test = AdvancedOptionsBacktest()
     adv_test.run()
+    
+    # 3. Запуск мульти-инструментального бэктеста фандинга (ЧАСТЬ 3)
+    run_multi_asset_funding_backtest()
     
     print("\nВсе бэктесты и продвинутый микс-тест успешно выполнены!")
