@@ -699,6 +699,174 @@ def run_cash_and_carry_backtest():
     return dates, equity_curve
 
 # ==============================================================================
+# СТРАТЕГИЯ 8: Арбитраж неэффективности (Butterfly Spreads) на MOEX
+# ==============================================================================
+def run_mispriced_butterfly_backtest():
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 8: АРБИТРАЖ НЕЭФФЕКТИВНОСТИ ОПЦИОНОВ (БАБОЧКИ 1-2-1)")
+    print("="*80)
+
+    dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="ME")
+    n_periods = len(dates)
+
+    # 4 ключевых базовых актива Московской биржи
+    instruments = {
+        "GAZR (Газпром)": {
+            "start_price": 17000.0,
+            "vol": 600.0,
+            "step": 250,
+            "contracts_base": 150,
+            "seed": 201
+        },
+        "SBRF (Сбербанк)": {
+            "start_price": 16000.0,
+            "vol": 1500.0,
+            "step": 500,
+            "contracts_base": 120,
+            "seed": 202
+        },
+        "Si (Доллар/Рубль)": {
+            "start_price": 75000.0,
+            "vol": 3500.0,
+            "step": 1000,
+            "contracts_base": 80,
+            "seed": 203
+        },
+        "RTS (Индекс РТС)": {
+            "start_price": 100000.0,
+            "vol": 5000.0,
+            "step": 2500,
+            "contracts_base": 50,
+            "seed": 204
+        }
+    }
+
+    commission_its = 0.45 # Тариф ИТС 0.45 руб. за контракт
+    results = {}
+
+    plt.figure(figsize=(14, 7))
+
+    for name, config in instruments.items():
+        np.random.seed(config["seed"])
+        prices = config["start_price"] + np.cumsum(np.random.normal(200, config["vol"], n_periods))
+
+        # Моделируем историческую (справедливую) и рыночную IV волатильность
+        hv = np.random.uniform(0.18, 0.28, n_periods)
+        iv = hv * np.random.uniform(0.75, 1.45, n_periods)
+
+        capital = 1000000.0
+        initial_capital = capital
+        contracts = config["contracts_base"]
+
+        trade_log = []
+        equity_curve = []
+
+        for i in range(n_periods - 1):
+            date = dates[i]
+            S_entry = prices[i]
+            S_exit = prices[i+1]
+
+            curr_hv = hv[i]
+            curr_iv = iv[i]
+            mispricing_ratio = curr_iv / curr_hv
+
+            # Центральный страйк K (At-The-Money)
+            step = config["step"]
+            K_center = int(round(S_entry / step)) * step
+            K_lower = K_center - step
+            K_upper = K_center + step
+
+            # Бабочка состоит из 4 контрактов на комплект (1-2-1): 1 купли lower, 2 продажи center, 1 купли upper
+            # Всего транзакций на 1 конструкцию: 4 контракта
+            total_contracts = contracts * 4
+            fee_open = total_contracts * commission_its
+            fee_exit = total_contracts * commission_its
+
+            # ВХОД В ПОЗИЦИЮ:
+            # Если IV > HV (опцион переоценен, IV/HV > 1.10): Продаем бабочку (Short Butterfly = продажа ATM 2x, покупка крыльев 1x)
+            # Если IV < HV (опцион недооценен, IV/HV < 0.90): Покупаем бабочку (Long Butterfly = покупка ATM 2x, продажа крыльев 1x)
+
+            # Справедливая стоимость бабочки стремится к максимуму в страйке K_center
+            # Выплата (payoff) конструкции на экспирации:
+            # Long Butterfly: max(0, S - K_lower) - 2*max(0, S - K_center) + max(0, S - K_upper)
+            payoff_long_butterfly = (max(0, S_exit - K_lower)
+                                    - 2 * max(0, S_exit - K_center)
+                                    + max(0, S_exit - K_upper))
+
+            if mispricing_ratio >= 1.10:
+                # Опционы ATM ДЕШЕВЛЕ теоретических относительно крыльев / Рынок завысил IV центра
+                # Открываем Short Butterfly (Продажа Бабочки)
+                # Стоимость входа (кредит)
+                net_credit = step * 0.40 * (mispricing_ratio) * contracts
+                capital += net_credit - fee_open
+
+                # Выплата на выходе (компенсация покупателю бабочки)
+                payout = payoff_long_butterfly * contracts
+                trade_profit = net_credit - payout - fee_open - fee_exit
+                capital -= (payout + fee_exit)
+                trade_type = "SHORT BUTTERFLY (ПРОДАЖА ОВЕРПРАЙС ATM)"
+
+            elif mispricing_ratio <= 0.90:
+                # Опционы ATM ДЕШЕВЛЕ справедливой цены (IV занижена)
+                # Открываем Long Butterfly (Покупка Бабочки)
+                net_debit = step * 0.25 * (mispricing_ratio) * contracts
+                capital -= (net_debit + fee_open)
+
+                payout = payoff_long_butterfly * contracts
+                trade_profit = payout - net_debit - fee_open - fee_exit
+                capital += (payout - fee_exit)
+                trade_type = "LONG BUTTERFLY (ПОКУПКА ДИСКОНТ ATM)"
+
+            else:
+                # Отклонение не превышает порогов: нейтральное удержание (боковая позиция / нейтральный доход)
+                net_debit = step * 0.10 * contracts
+                capital -= (net_debit + fee_open)
+                payout = max(0, step - abs(S_exit - K_center)) * 0.5 * contracts
+                trade_profit = payout - net_debit - fee_open - fee_exit
+                capital += (payout - fee_exit)
+                trade_type = "NEUTRAL BUTTERFLY"
+
+            trade_log.append({
+                "Дата": date.strftime("%Y-%m"),
+                "Спот Вход": int(S_entry),
+                "Спот Выход": int(S_exit),
+                "Страйк K": K_center,
+                "IV/HV Ratio": round(mispricing_ratio, 2),
+                "Тип сделки": trade_type,
+                "Профит": round(trade_profit, 2),
+                "Комиссия": round(fee_open + fee_exit, 2),
+                "Баланс": round(capital, 2)
+            })
+            equity_curve.append(capital)
+
+        df_log = pd.DataFrame(trade_log)
+        print(f"\n--- СИСТЕМНЫЙ ЖУРНАЛ СДЕЛКИ БАБОЧЕК ({name}) ---")
+        print(df_log.head(10).to_string(index=False))
+
+        total_return = (capital - initial_capital) / initial_capital * 100
+        days_total = (dates[-1] - dates[0]).days
+        apy = total_return * (365.0 / days_total)
+
+        print("\n" + "-"*40)
+        print(f"Итоговый баланс ({name}): {round(capital, 2)} руб.")
+        print(f"Общая доходность: {round(total_return, 2)}%")
+        print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+        print("-"*40)
+
+        plt.plot(dates[:-1], equity_curve, label=f"{name} (APY: {round(apy, 1)}%)", linewidth=2)
+        results[name] = (dates[:-1], equity_curve, apy)
+
+    plt.title("Сравнение доходности стратегии Бабочка (1-2-1) по активам MOEX (2023-2026)")
+    plt.xlabel("Дата")
+    plt.ylabel("Баланс счета, руб.")
+    plt.grid(True, linestyle="--", alpha=0.7)
+    plt.legend()
+    plt.savefig("butterfly_comparison.png", dpi=300)
+    plt.show()
+
+    return results
+
+# ==============================================================================
 # ЧАСТЬ 3: ДЕТАЛЬНЫЙ МУЛЬТИ-ИНСТРУМЕНТАЛЬНЫЙ БЭКТЕСТ ФАНДИНГА (PERPETUAL VS SPOT)
 # ==============================================================================
 
@@ -1117,7 +1285,10 @@ if __name__ == "__main__":
     adv_test = AdvancedOptionsBacktest()
     adv_test.run()
     
-    # 3. Запуск мульти-инструментального бэктеста фандинга (ЧАСТЬ 3)
+    # 3. Запуск бэктеста опционных бабочек на неэффективность (СТРАТЕГИЯ 8)
+    run_mispriced_butterfly_backtest()
+
+    # 4. Запуск мульти-инструментального бэктеста фандинга (ЧАСТЬ 3)
     run_multi_asset_funding_backtest()
     
     print("\nВсе бэктесты и продвинутый микс-тест успешно выполнены!")
