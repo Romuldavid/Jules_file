@@ -410,6 +410,156 @@ def run_diagonal_spread_backtest():
     return dates[:-1], equity_curve
 
 # ==============================================================================
+# СТРАТЕГИЯ 7: Покрытая продажа опционов Кол (недельные) на Газпром (GAZP)
+# ==============================================================================
+def run_covered_call_gazp_backtest():
+    print("\n" + "="*80)
+    print("ЗАПУСК БЭКТЕСТА 7: ПОКРЫТАЯ ПРОДАЖА CALL НА АКЦИИ ГАЗПРОМА (РЕАЛЬНЫЕ ЦЕНЫ MOEX)")
+    print("="*80)
+
+    import os
+    if os.path.exists("gazp_historical.csv"):
+        df_gazp = pd.read_csv("gazp_historical.csv")
+    else:
+        import urllib.request, json
+        url = "https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/GAZP.json?from=2023-01-01"
+        all_data = []
+        start = 0
+        while True:
+            try:
+                req = urllib.request.Request(f"{url}&start={start}", headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    cols = data['history']['columns']
+                    rows = data['history']['data']
+                    if not rows:
+                        break
+                    d_idx = cols.index('TRADEDATE')
+                    c_idx = cols.index('CLOSE')
+                    for r in rows:
+                        if r[c_idx] is not None:
+                            all_data.append({'date': r[d_idx], 'close': float(r[c_idx])})
+                    start += len(rows)
+                    if len(rows) < 100:
+                        break
+            except Exception:
+                break
+        df_gazp = pd.DataFrame(all_data)
+        if not df_gazp.empty:
+            df_gazp.to_csv("gazp_historical.csv", index=False)
+
+    df_gazp['date'] = pd.to_datetime(df_gazp['date'])
+    df_gazp = df_gazp.sort_values('date').reset_index(drop=True)
+
+    # Историческая волатильность (30-дневное окно)
+    df_gazp['returns'] = df_gazp['close'].pct_change()
+    df_gazp['vol'] = df_gazp['returns'].rolling(window=30).std() * np.sqrt(252)
+    df_gazp['vol'] = df_gazp['vol'].fillna(0.25).clip(lower=0.15)
+
+    # Недельный ресемплинг (каждые 5 торговых дней)
+    df_weekly = df_gazp.iloc[::5].copy().reset_index(drop=True)
+
+    capital = 1000000.0
+    initial_capital = capital
+
+    # Торговые условия MOEX:
+    # 1 лот GAZP на Мосбирже = 10 акций.
+    # 1 опционный контракт покрывает 1 лот (10 акций).
+    lot_size = 10
+
+    commission_its = 0.45       # Комиссия ФОРТС за контракт
+    commission_stock = 0.0005   # Комиссия за покупку акций на споте (0.05%)
+
+    from scipy.stats import norm
+    def bs_call_price(S, K, T, r, sigma):
+        if T <= 0 or sigma <= 0:
+            return max(0.0, S - K)
+        d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+        d2 = d1 - sigma * np.sqrt(T)
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+
+    equity_curve = []
+    equity_bh = []
+    dates = []
+    trade_log = []
+
+    # Настройка бенчмарка Buy & Hold GAZP
+    initial_close = df_weekly.loc[0, 'close']
+    bh_num_lots = int(initial_capital // (lot_size * initial_close))
+    bh_num_shares = bh_num_lots * lot_size
+    bh_cash = initial_capital - bh_num_shares * initial_close * (1.0 + commission_stock)
+
+    for i in range(len(df_weekly) - 1):
+        d_start = df_weekly.loc[i, 'date']
+        d_end = df_weekly.loc[i+1, 'date']
+        S_start = df_weekly.loc[i, 'close']
+        S_end = df_weekly.loc[i+1, 'close']
+        vol = df_weekly.loc[i, 'vol']
+
+        # Страйк ATM (Дельта ~0.5)
+        K = round(S_start)
+        T = 7.0 / 365.0  # Ближайшие недельные опционы
+        r = 0.12         # Ставка
+
+        prem_per_share = bs_call_price(S_start, K, T, r, vol)
+
+        num_lots = int(capital // (lot_size * S_start))
+        if num_lots == 0:
+            num_lots = 1
+
+        num_shares = num_lots * lot_size
+        num_contracts = num_lots
+
+        stock_cost = num_shares * S_start
+        stock_fee = stock_cost * commission_stock
+        prem_received = num_shares * prem_per_share
+        option_fee = num_contracts * commission_its
+
+        cash = capital - stock_cost - stock_fee + prem_received - option_fee
+
+        stock_val_end = num_shares * S_end
+        option_liability = num_shares * max(0.0, S_end - K)
+
+        capital = cash + stock_val_end - option_liability
+
+        equity_curve.append(capital)
+        bh_val = bh_cash + bh_num_shares * S_end
+        equity_bh.append(bh_val)
+        dates.append(d_end)
+
+        if i % 20 == 0 or i == len(df_weekly) - 2:
+            trade_log.append({
+                "Неделя": d_start.strftime("%Y-%m-%d"),
+                "Цена GAZP": round(S_start, 2),
+                "Страйк Call (Delta ~0.5)": K,
+                "Премия (руб/акц)": round(prem_per_share, 2),
+                "Лотов (х10 акц)": num_lots,
+                "Баланс CC (руб)": round(capital, 2),
+                "Баланс B&H (руб)": round(bh_val, 2)
+            })
+
+    df_log = pd.DataFrame(trade_log)
+    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 7 (COVERED CALL GAZP) ---")
+    print(df_log.to_string(index=False))
+
+    total_return = (capital - initial_capital) / initial_capital * 100
+    total_return_bh = (equity_bh[-1] - initial_capital) / initial_capital * 100
+    days_total = (dates[-1] - dates[0]).days
+    apy = total_return * (365.0 / days_total)
+    apy_bh = total_return_bh * (365.0 / days_total)
+
+    print("\n" + "-"*40)
+    print(f"Итоговый баланс (Покрытый Call GAZP): {round(capital, 2)} руб.")
+    print(f"Общая доходность (Покрытый Call GAZP): {round(total_return, 2)}%")
+    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+    print(f"Итоговый баланс (Buy & Hold GAZP): {round(equity_bh[-1], 2)} руб.")
+    print(f"Общая доходность (Buy & Hold GAZP): {round(total_return_bh, 2)}%")
+    print(f"Доходность в годовых B&H (APY): {round(apy_bh, 2)}%")
+    print("-"*40 + "\n")
+
+    return dates, equity_curve, equity_bh
+
+# ==============================================================================
 # СТРАТЕГИЯ 6: Валютный Cash-and-Carry (Спот CNY_TOM против Фьючерса)
 # ==============================================================================
 def run_cash_and_carry_backtest():
@@ -897,11 +1047,17 @@ if __name__ == "__main__":
     d6, eq6 = run_cash_and_carry_backtest()
     plt.plot(d6, eq6, label="Стратегия 6: Валютный Cash-and-Carry (CNY)", linewidth=3, marker="o", color="green")
     
+    # Запуск нового бэктеста 7 (Covered Call GAZP)
+    d7, eq7, eq7_bh = run_covered_call_gazp_backtest()
+    plt.plot(d7, eq7, label="Стратегия 7: Покрытый Call GAZP (MOEX)", linewidth=2.5, color="purple")
+    plt.plot(d7, eq7_bh, label="Бенчмарк: Buy & Hold GAZP", linewidth=1.5, linestyle="--", color="gray")
+
     plt.title("Сравнение доходности базовых стратегий на Московской бирже (2023-2026)")
     plt.xlabel("Дата")
     plt.ylabel("Баланс счета, руб.")
     plt.grid(True, linestyle="--", alpha=0.7)
     plt.legend()
+    plt.savefig("strategy_comparison.png", dpi=300)
     plt.show()
     
     # 2. Запуск продвинутого мульти-активного бэктеста (ЧАСТЬ 2)
