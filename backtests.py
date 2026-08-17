@@ -117,83 +117,136 @@ def run_funding_arbitrage_backtest():
     
     return dates, equity_curve
 
-# 2. Календарный спред фьючерсов
+# 2. Детальный мульти-инструментальный бэктест календарных фьючерсных спредов
 def run_calendar_futures_backtest():
     print("\n" + "="*80)
-    print("ЗАПУСК БЭКТЕСТА 2: КАЛЕНДАРНЫЙ СПРЕД ФЬЮЧЕРСОВ (CNY)")
+    print("ЗАПУСК БЭКТЕСТА 2: МУЛЬТИ-ИНСТРУМЕНТАЛЬНЫЕ КАЛЕНДАРНЫЕ ФЬЮЧЕРСНЫЕ СПРЕДЫ MOEX")
     print("="*80)
-    np.random.seed(100)
+
     dates = pd.date_range(start="2023-01-01", end="2026-08-01", freq="D")
     n_days = len(dates)
     
-    base_cny = 11.5 + np.cumsum(np.random.normal(0.005, 0.1, n_days))
-    near_prices = base_cny * 1.01
-    implied_spread_annual = 0.12 + 0.08 * np.sin(np.linspace(0, 15, n_days)) + np.random.normal(0, 0.01, n_days)
-    far_prices = near_prices * (1.0 + implied_spread_annual * (90.0/365.0))
+    instruments = {
+        "CNY (Юань/Рубль)": {
+            "lot_multiplier": 1000,
+            "base_price": 11.5,
+            "vol": 0.08,
+            "seed": 101,
+            "entry_contango": 0.18, # Вход при контанго >= 18% год
+            "exit_contango": 0.11,  # Выход при сужении до <= 11% год
+            "num_contracts": 250
+        },
+        "Si (Доллар/Рубль)": {
+            "lot_multiplier": 1000,
+            "base_price": 75.0,
+            "vol": 0.5,
+            "seed": 102,
+            "entry_contango": 0.19, # Вход при контанго >= 19% год
+            "exit_contango": 0.12,  # Выход при сужении до <= 12% год
+            "num_contracts": 40
+        },
+        "IMOEX (Индекс Мосбиржи)": {
+            "lot_multiplier": 1,
+            "base_price": 2800.0,
+            "vol": 15.0,
+            "seed": 103,
+            "entry_contango": 0.20,
+            "exit_contango": 0.12,
+            "num_contracts": 250
+        },
+        "GLD (Золото)": {
+            "lot_multiplier": 1,
+            "base_price": 4500.0,
+            "vol": 25.0,
+            "seed": 104,
+            "entry_contango": 0.16,
+            "exit_contango": 0.10,
+            "num_contracts": 150
+        }
+    }
     
-    capital = 1000000.0
-    initial_capital = capital
-    position_opened = False
     commission_its = 0.45
-    num_contracts = 250
+    results = {}
     
-    trade_log = []
-    equity_curve = []
-    
-    for i, date in enumerate(dates):
-        near_p = near_prices[i]
-        far_p = far_prices[i]
-        spread_pct_annual = ((far_p / near_p) - 1.0) * (365.0 / 90.0)
+    for name, config in instruments.items():
+        np.random.seed(config["seed"])
+        base_p = config["base_price"] + np.cumsum(np.random.normal(0.01, config["vol"], n_days))
+        near_prices = base_p * 1.01
         
-        if not position_opened and spread_pct_annual > 0.19:
-            broker_fee = num_contracts * 2 * commission_its
-            capital -= broker_fee
-            position_opened = True
-            entry_spread = far_p - near_p
-            trade_log.append({
-                "Дата": date.strftime("%Y-%m-%d"),
-                "Сделка": "ВХОД (ПРОДАЖА СПРЕДА)",
-                "Цена Ближнего": round(near_p, 2),
-                "Цена Дальнего": round(far_p, 2),
-                "Спред (руб)": round(entry_spread, 3),
-                "Контанго (% год)": round(spread_pct_annual * 100, 2),
-                "Комиссия": round(broker_fee, 2),
-                "Баланс": round(capital, 2)
-            })
-        elif position_opened and spread_pct_annual < 0.13:
-            exit_spread = far_p - near_p
-            profit = (entry_spread - exit_spread) * num_contracts * 1000
-            broker_fee = num_contracts * 2 * commission_its
-            capital += profit - broker_fee
-            position_opened = False
-            trade_log.append({
-                "Дата": date.strftime("%Y-%m-%d"),
-                "Сделка": "ВЫХОД (ФИКСАЦИЯ ПРИБЫЛИ)",
-                "Цена Ближнего": round(near_p, 2),
-                "Цена Дальнего": round(far_p, 2),
-                "Спред (руб)": round(exit_spread, 3),
-                "Контанго (% год)": round(spread_pct_annual * 100, 2),
-                "Комиссия": round(broker_fee, 2),
-                "Баланс": round(capital, 2)
-            })
+        # Моделируем динамику годового контанго между ближним и дальним контрактом (90 дней)
+        implied_spread_annual = 0.13 + 0.08 * np.sin(np.linspace(0, 18, n_days)) + np.random.normal(0, 0.012, n_days)
+        far_prices = near_prices * (1.0 + implied_spread_annual * (90.0 / 365.0))
+
+        capital = 1000000.0
+        initial_capital = capital
+        position_opened = False
+        num_contracts = config["num_contracts"]
+        entry_spread = 0.0
+
+        trade_log = []
+        equity_curve = []
+
+        for i, date in enumerate(dates):
+            near_p = near_prices[i]
+            far_p = far_prices[i]
+            days_to_expiry = 90 - (i % 90)
+            if days_to_expiry <= 0: days_to_expiry = 1
             
-        equity_curve.append(capital)
+            spread_pct_annual = ((far_p / near_p) - 1.0) * (365.0 / float(days_to_expiry))
+
+            # Правило входа: Продажа дальнего / Покупка ближнего при слишком высоком контанго
+            if not position_opened and spread_pct_annual >= config["entry_contango"]:
+                broker_fee = num_contracts * 2 * commission_its
+                capital -= broker_fee
+                position_opened = True
+                entry_spread = far_p - near_p
+                trade_log.append({
+                    "Дата": date.strftime("%Y-%m-%d"),
+                    "Сделка": "ВХОД (ПРОДАЖА СПРЕДА)",
+                    "Ближний": round(near_p, 2),
+                    "Дальний": round(far_p, 2),
+                    "Спред": round(entry_spread, 3),
+                    "Контанго (% год)": round(spread_pct_annual * 100, 2),
+                    "Комиссия": round(broker_fee, 2),
+                    "Баланс": round(capital, 2)
+                })
+            # Правило выхода: Закрытие позиции при схлопывании спреда или перед экспирацией
+            elif position_opened and (spread_pct_annual <= config["exit_contango"] or days_to_expiry <= 5):
+                exit_spread = far_p - near_p
+                profit = (entry_spread - exit_spread) * num_contracts * config["lot_multiplier"]
+                broker_fee = num_contracts * 2 * commission_its
+                capital += profit - broker_fee
+                position_opened = False
+                trade_log.append({
+                    "Дата": date.strftime("%Y-%m-%d"),
+                    "Сделка": "ВЫХОД (СХЛОПЫВАНИЕ СПРЕДА)",
+                    "Ближний": round(near_p, 2),
+                    "Дальний": round(far_p, 2),
+                    "Спред": round(exit_spread, 3),
+                    "Контанго (% год)": round(spread_pct_annual * 100, 2),
+                    "Комиссия": round(broker_fee, 2),
+                    "Баланс": round(capital, 2)
+                })
+
+            equity_curve.append(capital)
+
+        df_log = pd.DataFrame(trade_log)
+        print(f"\n--- ЖУРНАЛ СДЕЛКИ КАЛЕНДАРНОГО СПРЕДА ({name}) ---")
+        print(df_log.head(10).to_string(index=False))
         
-    df_log = pd.DataFrame(trade_log)
-    print("\n--- ЖУРНАЛ СДЕЛКИ СТРАТЕГИИ 2 ---")
-    print(df_log.to_string(index=False))
-    
-    total_return = (capital - initial_capital) / initial_capital * 100
-    days_total = (dates[-1] - dates[0]).days
-    apy = total_return * (365.0 / days_total)
-    
-    print("\n" + "-"*40)
-    print(f"Итоговый баланс (Стратегия 2): {round(capital, 2)} руб.")
-    print(f"Общая доходность: {round(total_return, 2)}%")
-    print(f"Доходность в годовых (APY): {round(apy, 2)}%")
-    print("-"*40 + "\n")
-    
-    return dates, equity_curve
+        total_return = (capital - initial_capital) / initial_capital * 100
+        days_total = (dates[-1] - dates[0]).days
+        apy = total_return * (365.0 / days_total)
+
+        print("\n" + "-"*40)
+        print(f"Итоговый баланс ({name}): {round(capital, 2)} руб.")
+        print(f"Общая доходность: {round(total_return, 2)}%")
+        print(f"Доходность в годовых (APY): {round(apy, 2)}%")
+        print("-"*40)
+
+        results[name] = (dates, equity_curve)
+
+    return dates, results["CNY (Юань/Рубль)"][1]
 
 # 3. Вертикальный Bull Call Спред на фьючерсы Sberbank (SBRF)
 def run_vertical_spread_backtest():
