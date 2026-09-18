@@ -1,20 +1,23 @@
 import unittest
 import math
 from long_straddle_bond_backtest import (
-    INITIAL_CAPITAL, CB_RATE_INIT, BOND_SPREAD, BOND_YIELD_ANNUAL, TAKE_PROFIT_PCT,
+    INITIAL_CAPITAL, BOND_SPREAD, TAKE_PROFIT_PCT,
+    get_cb_rate_for_date, get_bond_yield_for_period,
     black76_call, black76_put
 )
 
 class TestLongStraddleStrategy(unittest.TestCase):
 
-    def test_bond_yield_calculation(self):
-        expected_rate = (7.50 + 1.00) / 100.0
-        self.assertAlmostEqual(BOND_YIELD_ANNUAL, expected_rate, places=6)
+    def test_dynamic_cb_rate_schedule(self):
+        self.assertEqual(get_cb_rate_for_date('2023-01-01'), 7.50)
+        self.assertEqual(get_cb_rate_for_date('2023-08-20'), 12.00)
+        self.assertEqual(get_cb_rate_for_date('2024-11-01'), 21.00)
+        self.assertEqual(get_cb_rate_for_date('2026-07-01'), 14.00)
 
-        # Bond yield over 90 days on 1,000,000 RUB
-        q_income = INITIAL_CAPITAL * BOND_YIELD_ANNUAL * (90 / 365.0)
-        self.assertGreater(q_income, 0)
-        self.assertAlmostEqual(q_income, 20958.9041, places=2)
+    def test_bond_yield_period_calculation(self):
+        # 1 day yield at 7.5% + 1% = 8.5% p.a.
+        y_1day = get_bond_yield_for_period('2023-01-01', '2023-01-02')
+        self.assertAlmostEqual(y_1day, 0.085 / 365.0, places=6)
 
     def test_black76_option_pricing(self):
         F = 100.0
