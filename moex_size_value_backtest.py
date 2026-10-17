@@ -1,9 +1,9 @@
 """
 ================================================================================
   РЕАЛИСТИЧНЫЙ И СКЕПТИЧНЫЙ БЭКТЕСТ ФАКТОРНЫХ СТРАТЕГИЙ (SIZE & VALUE) НА MOEX
-  Период: 01 января 2010 г. — 16 октября 2026 г.
+  Период: 2013 г. — Настоящий момент (Только Реальные Исторические Данные MOEX)
   Начальный капитал: 5 000 000.00 рублей
-  Учет комиссий (0.05%), спредов и проскальзывания (0.10% - 0.35%), ликвидности
+  Условия: Комиссия 0.05%, Проскальзывание 0.10%-0.35%, Скептическая оценка
 ================================================================================
 """
 
@@ -26,7 +26,10 @@ SLIPPAGE_SMALL = 0.0035    # 0.35%
 
 session = requests.Session()
 
-def fetch_moex_stock_history(secid, date_from='2010-01-01', date_till='2026-10-16'):
+def fetch_moex_stock_history(secid, date_from='2010-01-01', date_till=None):
+    if date_till is None:
+        date_till = pd.Timestamp.now().strftime('%Y-%m-%d')
+
     url = f"https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/{secid}.json?from={date_from}&till={date_till}"
     all_rows = []
     start = 0
@@ -59,7 +62,7 @@ def fetch_moex_stock_history(secid, date_from='2010-01-01', date_till='2026-10-1
     df_res = df_res[['TRADEDATE', 'SECID', 'CLOSE', 'VALUE', 'VOLUME']].dropna(subset=['CLOSE'])
     df_res = df_res.sort_values('TRADEDATE').drop_duplicates('TRADEDATE')
 
-    # Corporate Actions / Splits Adjustment
+    # Corporate Actions / Splits Adjustment on raw prices
     if secid == 'VTBR':
         # 5000:1 reverse split on 2024-07-15
         df_res.loc[df_res['TRADEDATE'] < '2024-07-15', 'CLOSE'] *= 5000.0
@@ -74,23 +77,24 @@ def fetch_moex_stock_history(secid, date_from='2010-01-01', date_till='2026-10-1
 
 def run_backtest():
     print("=" * 80)
-    print("  ЗАПУСК БЭКТЕСТА ФАКТОРНЫХ СТРАТЕГИЙ НА MOEX (2010 - 2026)")
+    print("  МАКСИМАЛЬНО СКЕПТИЧНЫЙ И РЕАЛИСТИЧНЫЙ БЭКТЕСТ ФАКТОРОВ НА MOEX")
+    print("  Используются исключительно РЕАЛЬНЫЕ исторические котировки MOEX ISS API")
     print(f"  Начальный капитал: {INITIAL_CAPITAL:,.2f} руб.")
-    print("  Условия: Комиссия 0.05%, Проскальзывание 0.10%-0.35%, Скептическая оценка")
+    print("  Комиссия: 0.05%, Проскальзывание/Спред: 0.10% (Large) / 0.35% (Small)")
     print("=" * 80)
 
     all_secs = list(set(LARGE_CAPS + VALUE_STOCKS + SMALL_CAPS + MULTI_FACTOR))
     price_data = {}
 
-    print("Загрузка исторических данных MOEX ISS API...")
+    print("Загрузка реальных исторических данных MOEX ISS API...")
     for sec in all_secs:
         df = fetch_moex_stock_history(sec)
         if not df.empty:
             price_data[sec] = df.set_index('TRADEDATE')['CLOSE']
-            print(f"  {sec}: {len(df)} дней ({df['TRADEDATE'].min().strftime('%Y-%m-%d')} - {df['TRADEDATE'].max().strftime('%Y-%m-%d')})")
+            print(f"  {sec}: {len(df)} торговых дней ({df['TRADEDATE'].min().strftime('%Y-%m-%d')} — {df['TRADEDATE'].max().strftime('%Y-%m-%d')})")
 
     prices_raw = pd.DataFrame(price_data)
-    prices_df = prices_raw.ffill() # ONLY forward fill!
+    prices_df = prices_raw.ffill() # ONLY forward fill available historical prices
 
     rebalance_dates = prices_df.resample('QE').last().index
 
@@ -153,6 +157,9 @@ def run_backtest():
     small_res = simulate_portfolio(SMALL_CAPS, is_small_cap=True)
     multi_res = simulate_portfolio(MULTI_FACTOR, is_small_cap=True)
 
+    start_date = prices_df.index[0].strftime('%d.%m.%Y')
+    end_date = prices_df.index[-1].strftime('%d.%m.%Y')
+
     results_summary = []
 
     for name, df in [("Бенчмарк IMOEX (Large Caps)", bench_res),
@@ -174,7 +181,7 @@ def run_backtest():
         # Volatility & Sharpe
         daily_ret = df['Capital'].pct_change().dropna()
         ann_vol = daily_ret.std() * np.sqrt(252) * 100.0
-        rf = 8.5 # avg risk free rate 2013-2026
+        rf = 8.5 # Средняя безрисковая ставка
         sharpe = (cagr - rf) / ann_vol if ann_vol > 0 else 0
 
         results_summary.append({
@@ -190,7 +197,7 @@ def run_backtest():
         })
 
     res_df = pd.DataFrame(results_summary)
-    print("\nИТОГИ РЕАЛИСТИЧНОГО БЭКТЕСТА НА MOEX (2013 - 16.10.2026):")
+    print(f"\nИТОГИ СКЕПТИЧНОГО БЭКТЕСТА НА MOEX ({start_date} — {end_date}):")
     print(res_df.to_string(index=False))
 
     # Save combined results
@@ -202,7 +209,7 @@ def run_backtest():
     })
     combined_equity.to_csv('moex_backtest_equity.csv')
     res_df.to_csv('moex_backtest_summary.csv', index=False)
-    print("\nРезультаты сохранены в 'moex_backtest_equity.csv' и 'moex_backtest_summary.csv'.")
+    print("\nРезультаты успешно сохранены в 'moex_backtest_equity.csv' и 'moex_backtest_summary.csv'.")
 
 if __name__ == "__main__":
     run_backtest()
