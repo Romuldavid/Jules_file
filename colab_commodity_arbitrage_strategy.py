@@ -2,20 +2,13 @@
 colab_commodity_arbitrage_strategy.py
 Стратегия №4: Межрыночный и товарный арбитраж (СПбМТСБ и срочный рынок MOEX).
 
-Реализация полного алгоритма и бэктеста для Google Colab.
-Период: с 01.01.2021 по 09.11.2026.
-Начальный капитал: 1 000 000 руб.
+ТАРИФНЫЙ ПЛАН: «Стандартный ФОРТС»
+- Срочный рынок MOEX FORTS: 0.45 ₽ брокер + 1.00 ₽ биржа = 1.45 ₽ за 1 фьючерсный контракт.
+- СПбМТСБ сбор: 0.025% от объема сделки.
+- Поставка / экспирация фьючерса: 1.45 ₽ за контракт.
 
-Логика стратегии:
-1. Философия и институциональная специфика:
-   - Санкт-Петербургская Международная Товарно-сырьевая Биржа (СПбМТСБ) — главная площадка физической торговли нефтепродуктами в РФ.
-   - Срочный рынок Московской биржи (FORTS) котирует расчетные деривативы на нефтепродукты, экспирирующиеся по индексам СПбМТСБ.
-   - Из-за сезонности, транспортных задержек РЖД, ремонтов НПЗ возникают регулярные ценовые перекосы между реальным спотовым рынком СПбМТСБ и фьючерсами MOEX.
-2. Архитектура капитала и доходность:
-   - 100% капитала счета размещается в РЕПО с Центральным Контрагентом (RUSFAR) или БПИФ LQDT, получая ежедневную ставку денежного рынка.
-   - Под залог обеспечения при расширении базиса свыше 2.8-4.5% годовых открывается рыночно-нейтральный спред.
-   - К дате экспирации спред схлопывается в 0.00%, принося дополнительную премию +4.8% годовых.
-   - Итоговая доходность: 20-25% годовых при околонулевой просадке (< 0.5%) и Шарпе > 10.
+Период бэктеста: 01.01.2021 — 09.11.2026.
+Стартовый капитал: 1 000 000 руб.
 """
 
 import numpy as np
@@ -50,6 +43,12 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
     np.random.seed(42)
     spread_noise = np.random.normal(0, 0.00015, len(all_days))
 
+    # Тарифный план «Стандартный ФОРТС»
+    FUTURES_FEE_PER_CONTRACT = 1.45  # 0.45 ₽ брокер + 1.00 ₽ биржа
+    SPIMEX_FEE_RATE = 0.00025        # 0.025% сбор СПбМТСБ
+    # Контракт нефтепродуктов MOEX (например, 2 тонны или лот расчетного фьючерса ~100 000 руб)
+    CONTRACT_VALUE = 100000.0
+
     expirations = []
     current_year_month = None
     for d in all_days:
@@ -66,18 +65,21 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
 
     trades = []
     capital = initial_capital
-    entry_fee_rate = 0.0004
     entry_date = all_days[0]
-    entry_fee = capital * entry_fee_rate
-    capital -= entry_fee
+
+    num_contracts = max(int(capital / CONTRACT_VALUE), 1)
+    spimex_fee = capital * SPIMEX_FEE_RATE
+    futures_fee = num_contracts * FUTURES_FEE_PER_CONTRACT
+    total_entry_fee = spimex_fee + futures_fee
+    capital -= total_entry_fee
 
     trades.append({
         "Дата": entry_date.strftime("%Y-%m-%d"),
         "Событие": "ВХОД В АРБИТРАЖ",
-        "Инструмент": "Спот СПбМТСБ (Регуляр-92) + Шорт фьючерс MOEX",
-        "Операция": "Покупка физического базиса / Продажа фьючерса",
+        "Инструмент": f"Спот СПбМТСБ (Регуляр-92) + Шорт {num_contracts} фьюч. MOEX",
+        "Операция": "Покупка базиса (0.025%) + Продажа фьючерсов (1.45 ₽/контр)",
         "Капитал до сделки (руб)": round(initial_capital, 2),
-        "Комиссия (руб)": round(entry_fee, 2),
+        "Комиссия (руб)": round(total_entry_fee, 2),
         "Капитал после сделки (руб)": round(capital, 2),
         "Ставка RUSFAR": f"{rates.iloc[0]*100:.1f}%",
         "Товарный спред": f"{commodity_arb_premium_annual*100:.1f}%"
@@ -87,7 +89,6 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
     dates_list = [entry_date]
     current_cap = capital
     exp_idx = 0
-    roll_fee_rate = 0.0002
 
     for i in range(1, len(all_days)):
         d = all_days[i]
@@ -95,7 +96,9 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
         current_cap *= (1.0 + r_day)
 
         if exp_idx < len(expirations) and d == expirations[exp_idx]:
-            roll_fee = current_cap * roll_fee_rate
+            curr_contracts = max(int(current_cap / CONTRACT_VALUE), 1)
+            # Экспирация старого + продажа нового = 2.90 ₽ на контракт
+            roll_fee = curr_contracts * (FUTURES_FEE_PER_CONTRACT * 2.0)
             cap_before = current_cap
             current_cap -= roll_fee
 
@@ -107,8 +110,8 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
             trades.append({
                 "Дата": d.strftime("%Y-%m-%d"),
                 "Событие": "ЭКСПИРАЦИЯ / РОЛЛОВЕР",
-                "Инструмент": f"Схождение спреда СПбМТСБ-{m_curr:02d}.{y_curr:02d} -> Открытие {m_next:02d}.{y_next:02d}",
-                "Операция": "Фиксация спреда в 0 + открытие нового товарного арбитража",
+                "Инструмент": f"СПбМТСБ-{m_curr:02d}.{y_curr:02d} -> {m_next:02d}.{y_next:02d} ({curr_contracts} контр)",
+                "Операция": "Фиксация спреда + ролловер фьючерсов (2.90 ₽/контр)",
                 "Капитал до сделки (руб)": round(cap_before, 2),
                 "Комиссия (руб)": round(roll_fee, 2),
                 "Капитал после сделки (руб)": round(current_cap, 2),
@@ -121,18 +124,21 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
         equity_curve.append(current_cap)
 
     exit_date = all_days[-1]
-    exit_fee = current_cap * entry_fee_rate
+    final_contracts = max(int(current_cap / CONTRACT_VALUE), 1)
+    exit_spimex_fee = current_cap * SPIMEX_FEE_RATE
+    exit_futures_fee = final_contracts * FUTURES_FEE_PER_CONTRACT
+    total_exit_fee = exit_spimex_fee + exit_futures_fee
     cap_before_exit = current_cap
-    current_cap -= exit_fee
+    current_cap -= total_exit_fee
     equity_curve[-1] = current_cap
 
     trades.append({
         "Дата": exit_date.strftime("%Y-%m-%d"),
         "Событие": "ВЫХОД ИЗ СТРАТЕГИИ",
         "Инструмент": "Полное закрытие позиций СПбМТСБ и FORTS",
-        "Операция": "Фиксация арбитражной прибыли и вывод капитала в рубль",
+        "Операция": "Ликвидация позиций по Тарифу «Стандартный ФОРТС»",
         "Капитал до сделки (руб)": round(cap_before_exit, 2),
-        "Комиссия (руб)": round(exit_fee, 2),
+        "Комиссия (руб)": round(total_exit_fee, 2),
         "Капитал после сделки (руб)": round(current_cap, 2),
         "Ставка RUSFAR": f"{rates.iloc[-1]*100:.1f}%",
         "Товарный спред": f"{commodity_arb_premium_annual*100:.1f}%"
@@ -174,6 +180,7 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
         "Коэффициент Сортино (Sortino Ratio)": f"{sortino:.2f}",
         "Коэффициент Кальмара (Calmar Ratio)": f"{calmar:.2f}",
         "Количество арбитражных циклов": len(expirations),
+        "Тариф": "Стандартный ФОРТС (1.45 ₽/контр + 0.025% СПбМТСБ)",
         "Период бэктеста": f"{start_date} — {end_date} ({num_years:.2f} лет)"
     }
 
@@ -181,7 +188,7 @@ def run_commodity_arbitrage_backtest(initial_capital=1_000_000.0, start_date="20
 
 
 if __name__ == "__main__":
-    print("Запуск бэктеста Стратегии №4: Товарный арбитраж (СПбМТСБ + MOEX FORTS)...")
+    print("Запуск бэктеста Стратегии №4 по Тарифу «Стандартный ФОРТС»...")
     eq, trades, metrics = run_commodity_arbitrage_backtest()
 
     print("\n" + "=" * 85)
@@ -191,12 +198,11 @@ if __name__ == "__main__":
         print(f"  {k:40}: {v}")
 
     trades.to_csv("commodity_arbitrage_trades.csv", index=False)
-    print("\nЖурнал сделок сохранен в 'commodity_arbitrage_trades.csv'")
 
     plt.figure(figsize=(12, 6))
-    plt.plot(eq.index, eq.values / 1e6, label="Капитал Стратегии №4: Товарный арбитраж (млн руб)", color="#196f3d", lw=2.5)
+    plt.plot(eq.index, eq.values / 1e6, label="Капитал Товарного арбитража по Тарифу ФОРТС (млн руб)", color="#196f3d", lw=2.5)
     plt.axhline(1.0, color="gray", linestyle="--", alpha=0.7, label="Стартовый 1 000 000 руб")
-    plt.title("Бэктест Стратегии №4: Товарный арбитраж СПбМТСБ и FORTS (2021–2026)", fontsize=13, fontweight="bold")
+    plt.title("Бэктест Товарного арбитража по Тарифу «Стандартный ФОРТС» (2021–2026)", fontsize=13, fontweight="bold")
     plt.ylabel("Капитал (млн рублей)", fontsize=11)
     plt.xlabel("Дата", fontsize=11)
     plt.grid(True, linestyle="--", alpha=0.5)
@@ -205,4 +211,4 @@ if __name__ == "__main__":
     chart_name = "colab_commodity_arbitrage_result.png"
     plt.savefig(chart_name, dpi=300)
     plt.close()
-    print(f"График сохранен в '{chart_name}'")
+    print(f"\nГрафик сохранен в '{chart_name}'")
