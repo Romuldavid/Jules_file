@@ -138,11 +138,22 @@ def run_rbloggers_backtests():
     rgbi_ret = rgbi.pct_change().fillna(0.0)
     gld_ret = gld.pct_change().fillna(0.0)
 
-    # Параметры транзакционных издержек MOEX
+    # Параметры транзакционных издержек MOEX (Фондовый рынок)
     COMMISSION = 0.0004     # 0.04% брокер + биржа
     SLIPPAGE = 0.0005       # 0.05% проскальзывание в стакане
     TOTAL_FEE_1WAY = COMMISSION + SLIPPAGE  # 0.09% на вход/выход
     SHORT_BORROW_SPREAD = 0.05  # Плата за шорт = ставка ЦБ + 5%
+
+    # Тарифный план «Стандартный ФОРТС»:
+    # Биржевой сбор + брокер за 1 контракт фьючерса (подача через ИТС):
+    # 0.45 руб. (брокер) + ~1.00 руб. (биржа) = 1.45 руб. за контракт
+    # За спред (2 контракта, вход + выход): 1.45 * 2 * 2 = 5.80 руб. на 1 спред
+    # Исполнение поставочного опциона (двойная ставка ИТС): 0.45 * 2 = 0.90 руб.
+    FORTS_BROKER_FEE = 0.45
+    FORTS_EXCHANGE_FEE = 1.00
+    FORTS_CONTRACT_FEE_1WAY = FORTS_BROKER_FEE + FORTS_EXCHANGE_FEE  # 1.45 руб.
+    FORTS_SPREAD_ROUNDTRIP_FEE = FORTS_CONTRACT_FEE_1WAY * 2.0 * 2.0  # 5.80 руб.
+    FORTS_OPTION_EXERCISE_FEE = FORTS_BROKER_FEE * 2.0  # 0.90 руб.
 
     # =========================================================================
     # 1. Adaptive Asset Allocation (AAA) - Systematic Investor / Butler et al.
@@ -294,6 +305,36 @@ def run_rbloggers_backtests():
         pairs_rets.loc[d] = ret - fee
 
     # =========================================================================
+    # 3b. Cointegration Pairs Trading on FORTS Futures (Тариф «Стандартный ФОРТС»)
+    # =========================================================================
+    # Торговля тем же спредом SBER / SBERP, но через поставочные/расчетные фьючерсы
+    # на срочном рынке FORTS (контракты SR / SP).
+    # Преимущества срочного рынка:
+    # 1. НЕТ платы за шорт (шорт фьючерса бесплатный, ГО списывается симметрично ~15-20%).
+    # 2. 80-85% капитала остается в кэше и размещается в РЕПО с ЦК (RUSFAR) или фонд LQDT.
+    # 3. Комиссия по тарифу «Стандартный ФОРТС»: 1.45 руб. за контракт (0.45 руб. брокер + 1.00 руб. биржа).
+    #    При стоимости контракта SBER (~25 000 - 30 000 руб.) комиссия 1.45 руб. = всего 0.005% (0.5 bps)!
+    #    Полный круг на 1 спред (2 ноги, вход + выход) = 5.80 руб.
+    forts_pairs_rets = pd.Series(0.0, index=dates)
+    forts_spread_pct_fee = 5.80 / 60000.0  # 5.80 руб. на 2 контракта стоимостью ~60 000 руб. ~ 0.000097 (0.01%)
+
+    for d in dates:
+        pos = pair_pos.loc[d]
+        switch = pair_switches.loc[d]
+        fee = switch * forts_spread_pct_fee
+
+        if pos == 1.0:
+            # Long фьючерс SBER, Short фьючерс SBERP. ГО ~20%, 80% кэша под RUSFAR. Шорт бесплатный!
+            ret = 0.5 * sber_ret.loc[d] - 0.5 * sberp_ret.loc[d] + 0.80 * daily_rf.loc[d]
+        elif pos == -1.0:
+            # Short фьючерс SBER, Long фьючерс SBERP. ГО ~20%, 80% кэша под RUSFAR. Шорт бесплатный!
+            ret = -0.5 * sber_ret.loc[d] + 0.5 * sberp_ret.loc[d] + 0.80 * daily_rf.loc[d]
+        else:
+            # Flat -> 100% капитал под ставку RUSFAR
+            ret = daily_rf.loc[d]
+        forts_pairs_rets.loc[d] = ret - fee
+
+    # =========================================================================
     # 4. Trend Following SMA-200 with Money Market Yield (Quantstrat Classic)
     # =========================================================================
     # Если IMOEX > SMA(200) -> 100% Long IMOEX
@@ -360,7 +401,8 @@ def run_rbloggers_backtests():
         "Benchmark: Money Market (RUSFAR/LQDT)": daily_rf,
         "1. Adaptive Asset Allocation (AAA)": aaa_rets,
         "2. Volatility Targeting Filter": vol_filter_rets,
-        "3. Cointegration Pairs Trading (SBER/SBERP)": pairs_rets,
+        "3a. Pairs Trading Spot (Дорогой шорт)": pairs_rets,
+        "3b. Pairs Trading FORTS («Стандартный ФОРТС»)": forts_pairs_rets,
         "4. Trend Following SMA-200 + Cash": trend_rets,
         "5. 1-Month Mean Reversion (Laggard Bounce)": reversion_rets
     }
@@ -392,7 +434,8 @@ def run_rbloggers_backtests():
         "Benchmark: Money Market (RUSFAR/LQDT)": "black",
         "1. Adaptive Asset Allocation (AAA)": "#1f77b4",
         "2. Volatility Targeting Filter": "#ff7f0e",
-        "3. Cointegration Pairs Trading (SBER/SBERP)": "#2ca02c",
+        "3a. Pairs Trading Spot (Дорогой шорт)": "#7f7f7f",
+        "3b. Pairs Trading FORTS («Стандартный ФОРТС»)": "#2ca02c",
         "4. Trend Following SMA-200 + Cash": "#d62728",
         "5. 1-Month Mean Reversion (Laggard Bounce)": "#9467bd"
     }
@@ -401,7 +444,8 @@ def run_rbloggers_backtests():
         "Benchmark: Money Market (RUSFAR/LQDT)": "--",
         "1. Adaptive Asset Allocation (AAA)": "-",
         "2. Volatility Targeting Filter": "-",
-        "3. Cointegration Pairs Trading (SBER/SBERP)": "-",
+        "3a. Pairs Trading Spot (Дорогой шорт)": ":",
+        "3b. Pairs Trading FORTS («Стандартный ФОРТС»)": "-",
         "4. Trend Following SMA-200 + Cash": "-",
         "5. 1-Month Mean Reversion (Laggard Bounce)": "-"
     }

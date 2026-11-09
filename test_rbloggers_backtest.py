@@ -62,9 +62,21 @@ class TestRBloggersBacktest(unittest.TestCase):
         strategies = metrics_df["Strategy"].tolist()
         self.assertTrue(any("Adaptive Asset Allocation" in s for s in strategies))
         self.assertTrue(any("Volatility Targeting" in s for s in strategies))
-        self.assertTrue(any("Cointegration Pairs" in s for s in strategies))
+        self.assertTrue(any("Pairs Trading Spot" in s for s in strategies))
+        self.assertTrue(any("Pairs Trading FORTS" in s for s in strategies))
         self.assertTrue(any("Trend Following" in s for s in strategies))
         self.assertTrue(any("Mean Reversion" in s for s in strategies))
+
+    def test_forts_tariff_superiority(self):
+        metrics_df, _ = run_rbloggers_backtests()
+        spot_row = metrics_df[metrics_df["Strategy"].str.contains("Pairs Trading Spot")].iloc[0]
+        forts_row = metrics_df[metrics_df["Strategy"].str.contains("Pairs Trading FORTS")].iloc[0]
+
+        # FORTS с тарифом «Стандартный ФОРТС» и бесплатным шортом обязан радикально
+        # превосходить маржинальный спот по доходности и коэффициенту Шарпа
+        self.assertGreater(forts_row["CAGR"], spot_row["CAGR"])
+        self.assertGreater(forts_row["Sharpe"], spot_row["Sharpe"])
+        self.assertLess(forts_row["MaxDrawdown"], spot_row["MaxDrawdown"])
 
 
 if __name__ == "__main__":
