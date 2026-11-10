@@ -505,7 +505,7 @@ def export_to_csv(events: List[Dict[str, Any]], filepath: str = "bookmaker_odds.
     return filepath
 
 
-def parse_arguments() -> argparse.Namespace:
+def parse_arguments(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Парсер коэффициентов спортивных событий букмекерских контор РФ в реальном времени."
     )
@@ -539,7 +539,11 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Вывести официальный реестр букмекерских контор РФ.",
     )
-    return parser.parse_args()
+    # In Jupyter Notebook / Google Colab environments, the kernel passes extra arguments
+    # such as `-f /root/.local/share/jupyter/runtime/kernel-*.json`.
+    # parse_known_args ensures these extra kernel arguments are ignored without crashing.
+    parsed, _ = parser.parse_known_args(args)
+    return parsed
 
 
 def main():

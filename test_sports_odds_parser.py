@@ -207,6 +207,16 @@ class TestSportsOddsParser(unittest.TestCase):
             matched = any(bk in key or key in bk for key in agg.parsers)
             self.assertTrue(matched, f"Bookmaker {bk} not found in aggregator")
 
+    def test_colab_kernel_argument_parsing(self):
+        """Verifies that Jupyter / Google Colab kernel launcher flags (-f ...) are ignored without raising SystemExit."""
+        from sports_odds_parser import parse_arguments
+
+        colab_argv = ["-f", "/root/.local/share/jupyter/runtime/kernel-583069cb-4497-4118-b55d-78b37a20.json"]
+        args = parse_arguments(colab_argv)
+        self.assertIsNotNone(args)
+        self.assertEqual(args.output, "bookmaker_odds.csv")
+        self.assertIsNone(args.sport)
+
     def test_export_to_csv(self):
         """Tests CSV export and verifies header and row integrity with UTF-8 BOM."""
         sample_events = [
