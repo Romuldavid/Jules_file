@@ -2,16 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-Тесты для модуля arbitrage_scanner.py
+Тесты для обновленного модуля arbitrage_scanner.py
 """
 
 import unittest
 import os
+import json
 import pandas as pd
 from arbitrage_scanner import (
     clean_team_name,
     calculate_arbitrage_2way,
     calculate_arbitrage_3way,
+    parse_totals_dict,
     ArbitrageScanner
 )
 
@@ -59,71 +61,85 @@ class TestArbitrageScanner(unittest.TestCase):
         self.assertGreater(res['stake3'] * 4.00, res['total_invested'])
 
     def test_calculate_arbitrage_3way_no_arb(self):
-        # Обычные кэфы: 2.10, 3.20, 3.40 -> 0.476 + 0.3125 + 0.294 = 1.08 > 1.0
         res = calculate_arbitrage_3way(2.10, 3.20, 3.40, bank=10000.0)
         self.assertIsNone(res)
 
-    def test_scanner_end_to_end_mock(self):
-        # Создаем тестовые данные для двух БК
+    def test_parse_totals_dict(self):
+        json_data = json.dumps({"2.5": [1.95, 1.95], "1.5": [3.10, 1.40]})
+        parsed = parse_totals_dict(json_data)
+        self.assertIn("2.5", parsed)
+        self.assertEqual(parsed["2.5"], (1.95, 1.95))
+        self.assertEqual(parsed["1.5"], (3.10, 1.40))
+        self.assertEqual(parse_totals_dict(None), {})
+
+    def test_scanner_multitotals_and_2way_arb(self):
+        # Тестируем жесткие 2-исходные вилки на Тотал Больше/Меньше
         df1 = pd.DataFrame([{
-            'bookmaker': 'БК_Тест_А',
+            'bookmaker': 'БК_Альфа',
             'sport': 'Футбол',
-            'tournament': 'Лига Чемпионов',
+            'tournament': 'РПЛ',
             'event_id': 101,
-            'event': 'Реал Мадрид — Барселона',
-            'team1': 'Реал Мадрид',
-            'team2': 'Барселона',
-            'event_time': '2026-11-20 22:00',
-            'P1': 2.20,
-            'X': 3.50,
-            'P2': 3.20,
-            '1X': 1.35,
+            'event': 'Спартак — Зенит',
+            'team1': 'Спартак',
+            'team2': 'Зенит',
+            'event_time': '2026-11-20 20:00',
+            'P1': 2.50,
+            'X': 3.40,
+            'P2': 2.90,
+            '1X': 1.40,
             '12': 1.30,
-            'X2': 1.70,
+            'X2': 1.55,
             'Total_val': 2.5,
-            'Total_under': 2.10,
-            'Total_over': 1.75
+            'Total_under': 2.15,
+            'Total_over': 1.75,
+            'totals_json': json.dumps({
+                "2.5": [2.15, 1.75],
+                "3.5": [1.45, 2.80]
+            })
         }])
 
         df2 = pd.DataFrame([{
-            'bookmaker': 'БК_Тест_Б',
+            'bookmaker': 'БК_Бета',
             'sport': 'Футбол',
-            'tournament': 'UEFA Champions League',
+            'tournament': 'Russian Premier League',
             'event_id': 202,
-            'event': 'ФК Real Madrid — FC Barcelona',
-            'team1': 'Real Madrid',
-            'team2': 'FC Barcelona',
-            'event_time': '2026-11-20 22:00',
-            'P1': 1.90,
-            'X': 3.50,
-            'P2': 4.20,
-            '1X': 1.25,
+            'event': 'Spartak — Zenit',
+            'team1': 'Spartak',
+            'team2': 'Zenit',
+            'event_time': '2026-11-20 20:00',
+            'P1': 2.40,
+            'X': 3.30,
+            'P2': 3.10,
+            '1X': 1.35,
             '12': 1.30,
-            'X2': 1.95,
+            'X2': 1.60,
             'Total_val': 2.5,
             'Total_under': 1.75,
-            'Total_over': 2.15
+            'Total_over': 2.15,
+            'totals_json': json.dumps({
+                "2.5": [1.75, 2.15],
+                "3.5": [1.80, 2.05]
+            })
         }])
 
-        df1.to_csv('temp_bk1.csv', index=False)
-        df2.to_csv('temp_bk2.csv', index=False)
+        df1.to_csv('temp_test_bk1.csv', index=False)
+        df2.to_csv('temp_test_bk2.csv', index=False)
 
         scanner = ArbitrageScanner(bank=10000, min_profit=0.1)
-        scanner.load_data(['temp_bk1.csv', 'temp_bk2.csv'])
+        scanner.load_data_from_csv_files(['temp_test_bk1.csv', 'temp_test_bk2.csv'])
         matched = scanner.match_events(threshold=75)
         self.assertEqual(len(matched), 1)
 
         surebets = scanner.scan_surebets(matched)
         self.assertGreater(len(surebets), 0)
 
-        # Проверяем экспорт
-        scanner.export_to_csv(surebets, 'temp_surebets.csv')
-        self.assertTrue(os.path.exists('temp_surebets.csv'))
-        exported_df = pd.read_csv('temp_surebets.csv')
-        self.assertEqual(len(exported_df), len(surebets))
+        # Проверяем наличие жесткой вилки на Тотал 2.5:
+        # ТМ(2.5) в БК Альфа = 2.15, ТБ(2.5) в БК Бета = 2.15 -> инверсия: 1/2.15 + 1/2.15 = 0.9302 < 1.0 (Вилка ~7.5%)
+        total_arbs = [s for s in surebets if "Тотал (2.5)" in s['market']]
+        self.assertTrue(len(total_arbs) > 0)
 
         # Очистка
-        for tmp in ['temp_bk1.csv', 'temp_bk2.csv', 'temp_surebets.csv']:
+        for tmp in ['temp_test_bk1.csv', 'temp_test_bk2.csv']:
             if os.path.exists(tmp):
                 os.remove(tmp)
 

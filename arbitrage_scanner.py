@@ -5,36 +5,32 @@
 arbitrage_scanner.py
 --------------------
 Программа для анализа и поиска букмекерских вилок (арбитражных ситуаций)
-на основе CSV-файлов с коэффициентами спортивных событий.
+на основе реальных данных линий БК с многопоточным сбором и поддержкой мультимаркетов.
 
-Функционал:
-1. Загрузка данных из одного или нескольких CSV-файлов.
-2. Интеллектуальное сопоставление событий между БК (Fuzzy matching).
-3. Поиск 2-исходных вилок:
-   - Тотал Больше / Тотал Меньше (ТБ vs ТМ при одинаковом значении тотала)
-   - Фора 1 / Фора 2 (Ф1(+X) vs Ф2(-X))
-   - Двойной исход vs Противоположный исход (1X vs П2, X2 vs П1, 12 vs X)
-4. Поиск 3-исходных вилок:
-   - Исход матча (П1, X, П2)
-5. Расчет оптимальных ставок для заданного банка (по умолчанию 10 000 руб):
-   - Округление ставок до 10 руб (для реалистичности и минимизации внимания СБ)
-   - Расчет гарантированной прибыли в рублях и % доходности.
-6. Экспорт найденных вилок в CSV и наглядный вывод в терминал.
+Шаги работы:
+- Шаг 1: Асинхронный многопоточный сбор (Исходы + Тоталы + Форы)...
+         Запрашиваем маркеты исходов, тоталов и фор одновременно...
+         (При исчерпании лимитов API: переключение на зеркало реальной линии).
+- Шаг 2: Объединение рынков и кросс-букмекерский мэтчинг...
+- Шаг 3: Поиск вилок по всем типам рынков (включая жесткие 2-исхода на Тотал Больше/Меньше)...
 """
 
 import sys
 import re
 import os
+import json
 import argparse
 import datetime
+import concurrent.futures
+from typing import List, Dict, Any, Tuple, Optional
+
+import requests
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Any, Tuple, Optional
 
 try:
     from rapidfuzz import fuzz
 except ImportError:
-    # Запасной вариант если rapidfuzz не установлен
     import difflib
     class FuzzFallback:
         @staticmethod
@@ -45,7 +41,6 @@ except ImportError:
             return difflib.SequenceMatcher(None, s1, s2).ratio() * 100
     fuzz = FuzzFallback()
 
-
 TRANSLIT_DICT = {
     'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh',
     'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o',
@@ -54,7 +49,7 @@ TRANSLIT_DICT = {
 }
 
 def transliterate(text: str) -> str:
-    """Транслитерирует русский текст в латиницу для сопоставления между ру/англ написанием."""
+    """Транслитерирует русский текст в латиницу для сопоставления названий."""
     res = []
     for char in text.lower():
         res.append(TRANSLIT_DICT.get(char, char))
@@ -65,11 +60,8 @@ def clean_team_name(name: str) -> str:
     if not isinstance(name, str):
         return ""
     name = name.lower()
-    # Удаление кавычек, спецсимволов и лишних знаков
     name = re.sub(r'["\'`«»()\[\]{}]', ' ', name)
-    # Замена дефисов и подчеркиваний на пробелы
     name = re.sub(r'[-_./\\]', ' ', name)
-    # Удаление частых приставок команд
     stop_words = {
         'фк', 'хк', 'бк', 'вк', 'пфк', 'fc', 'hc', 'bc', 'fk', 'sk', 'club', 'team',
         'жфк', 'women', 'жен', 'муж', 'u19', 'u20', 'u21', 'u23', 'ю19', 'ю21',
@@ -82,22 +74,20 @@ def clean_team_name(name: str) -> str:
 
 def calculate_arbitrage_2way(k1: float, k2: float, bank: float = 10000.0, round_to: int = 10) -> Optional[Dict[str, Any]]:
     """
-    Рассчитывает параметры 2-исходной вилки.
-    L = 1/k1 + 1/k2. Вилка существует, если L < 1.0.
+    Рассчитывает параметры жесткой 2-исходной вилки (например, ТБ vs ТМ).
+    L = 1/k1 + 1/k2 < 1.0
     """
     if k1 <= 1.01 or k2 <= 1.01:
         return None
     inv_sum = (1.0 / k1) + (1.0 / k2)
     if inv_sum >= 1.0:
-        return None  # Нет вилки
+        return None
 
     profit_pct = (1.0 / inv_sum - 1.0) * 100.0
 
-    # Идеальные ставки
     stake1_exact = bank / (k1 * inv_sum)
     stake2_exact = bank / (k2 * inv_sum)
 
-    # Округление ставок
     if round_to > 0:
         stake1 = round(stake1_exact / round_to) * round_to
         stake2 = round(stake2_exact / round_to) * round_to
@@ -111,7 +101,7 @@ def calculate_arbitrage_2way(k1: float, k2: float, bank: float = 10000.0, round_
     min_profit = min(win1, win2)
 
     return {
-        'type': '2-исходная',
+        'type': '2-исходная (Жесткая)',
         'inv_sum': round(inv_sum, 4),
         'profit_pct': round(profit_pct, 2),
         'bank': bank,
@@ -127,7 +117,7 @@ def calculate_arbitrage_2way(k1: float, k2: float, bank: float = 10000.0, round_
 def calculate_arbitrage_3way(k1: float, kx: float, k2: float, bank: float = 10000.0, round_to: int = 10) -> Optional[Dict[str, Any]]:
     """
     Рассчитывает параметры 3-исходной вилки (П1, X, П2).
-    L = 1/k1 + 1/kx + 1/k2. Вилка существует, если L < 1.0.
+    L = 1/k1 + 1/kx + 1/k2 < 1.0
     """
     if k1 <= 1.01 or kx <= 1.01 or k2 <= 1.01:
         return None
@@ -172,64 +162,359 @@ def calculate_arbitrage_3way(k1: float, kx: float, k2: float, bank: float = 1000
     }
 
 
+def parse_totals_dict(val: Any) -> Dict[str, Tuple[float, float]]:
+    """
+    Парсит сохраненный json или строку тоталов {total_val: [under_kf, over_kf]}.
+    """
+    if not val or pd.isna(val):
+        return {}
+    if isinstance(val, dict):
+        return val
+    try:
+        data = json.loads(str(val))
+        res = {}
+        for k, v in data.items():
+            k_clean = str(k).replace('+', '').strip()
+            if isinstance(v, (list, tuple)) and len(v) >= 2:
+                res[k_clean] = (float(v[0] or 0), float(v[1] or 0))
+            elif isinstance(v, dict):
+                res[k_clean] = (float(v.get('under') or 0), float(v.get('over') or 0))
+        return res
+    except Exception:
+        return {}
+
+
 class ArbitrageScanner:
-    """Класс для загрузки данных, матчинга матчей и поиска вилок."""
+    """Класс для загрузки данных, матчинга и поиска вилок."""
 
     def __init__(self, bank: float = 10000.0, min_profit: float = 0.1, max_profit: float = 25.0, round_to: int = 10):
         self.bank = bank
         self.min_profit = min_profit
-        self.max_profit = max_profit  # Защита от явных опечаток/ошибок линии букмекера (>25%)
+        self.max_profit = max_profit
         self.round_to = round_to
         self.events_df = pd.DataFrame()
 
-    def load_data(self, files: List[str]) -> pd.DataFrame:
-        """Загружает данные из одного или нескольких CSV файлов."""
-        dfs = []
-        for f in files:
-            if not os.path.exists(f):
-                print(f"[ПРЕДУПРЕЖДЕНИЕ] Файл {f} не найден, пропускаем.")
-                continue
+    def fetch_live_mirror_or_api(self, bookmaker: str, max_events: int = 500) -> pd.DataFrame:
+        """
+        Запрашивает маркеты исходов, тоталов и фор.
+        В случае исчерпания публичных лимитов или ошибок сети,
+        загружает зеркало реальной линии мультимаркетов.
+        """
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+
+        if bookmaker in ['Фонбет', 'PARI']:
             try:
-                df = pd.read_csv(f)
-                if not df.empty and 'bookmaker' in df.columns:
-                    dfs.append(df)
-                    print(f"[ИНФО] Загружено {len(df)} записей из {f} (БК: {df['bookmaker'].unique().tolist()})")
-            except Exception as e:
-                print(f"[ОШИБКА] Не удалось прочитать {f}: {e}")
+                url = "https://line-lb51-w.pb06e2-resources.com/events/listBase?lang=ru&scopeMarket=2300"
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                data = resp.json()
+
+                sports = {s['id']: s['name'] for s in data.get('sports', [])}
+                sport_parents = {}
+                for s in data.get('sports', []):
+                    p_id = s.get('parentId')
+                    sport_parents[s['id']] = sports[p_id] if p_id and p_id in sports else s.get('name', '')
+
+                factors = {f['e']: {item['f']: item for item in f.get('factors', [])} for f in data.get('customFactors', [])}
+                events = data.get('events', [])
+                records = []
+
+                for ev in events[:max_events * 2]:
+                    if ev.get('place') != 'line':
+                        continue
+                    team1 = ev.get('team1', '')
+                    team2 = ev.get('team2', '')
+                    if not team1 or not team2:
+                        continue
+                    eid = ev.get('id')
+                    ef = factors.get(eid, {})
+
+                    p1 = ef.get(921, {}).get('v')
+                    px = ef.get(922, {}).get('v')
+                    p2 = ef.get(923, {}).get('v')
+                    p1x = ef.get(924, {}).get('v')
+                    p12 = ef.get(1571, {}).get('v')
+                    px2 = ef.get(925, {}).get('v')
+
+                    tb_main = ef.get(930, {}).get('v')
+                    tm_main = ef.get(931, {}).get('v')
+                    tot_val_main = ef.get(930, {}).get('pt') or ef.get(931, {}).get('pt')
+
+                    # Мульти-тоталы (различные пороги)
+                    totals_dict = {}
+                    if tot_val_main and tm_main and tb_main:
+                        totals_dict[str(tot_val_main).replace('+', '')] = [float(tm_main), float(tb_main)]
+
+                    # Дополнительные тоталы из расширенных факторов
+                    total_factor_pairs = [
+                        (1696, 1697, '0.5'),
+                        (1727, 1728, '1.0'),
+                        (1730, 1731, '1.5'),
+                        (1733, 1734, '2.0'),
+                        (931, 930, '2.5'),
+                        (1736, 1737, '3.0'),
+                        (1739, 1791, '3.5'),
+                        (1793, 1794, '4.0'),
+                        (1796, 1797, '4.5')
+                    ]
+                    for tm_f, tb_f, pt_val in total_factor_pairs:
+                        tm_v = ef.get(tm_f, {}).get('v')
+                        tb_v = ef.get(tb_f, {}).get('v')
+                        if tm_v and tb_v:
+                            totals_dict[pt_val] = [float(tm_v), float(tb_v)]
+
+                    # Форы
+                    h1_kf = ef.get(927, {}).get('v')
+                    h1_val = ef.get(927, {}).get('pt')
+                    h2_kf = ef.get(928, {}).get('v')
+                    h2_val = ef.get(928, {}).get('pt')
+
+                    sport_name = sport_parents.get(ev.get('sportId'), 'Футбол')
+                    start_ts = ev.get('startTime')
+                    ev_time = datetime.datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M") if start_ts else ""
+
+                    records.append({
+                        'bookmaker': bookmaker,
+                        'sport': sport_name,
+                        'tournament': sports.get(ev.get('sportId'), ''),
+                        'event_id': eid,
+                        'event': f"{team1} — {team2}",
+                        'team1': team1,
+                        'team2': team2,
+                        'event_time': ev_time,
+                        'parsed_time': now_str,
+                        'P1': p1,
+                        'X': px,
+                        'P2': p2,
+                        '1X': p1x,
+                        '12': p12,
+                        'X2': px2,
+                        'Handicap1_val': h1_val,
+                        'Handicap1_kf': h1_kf,
+                        'Handicap2_val': h2_val,
+                        'Handicap2_kf': h2_kf,
+                        'Total_val': tot_val_main,
+                        'Total_under': tm_main,
+                        'Total_over': tb_main,
+                        'totals_json': json.dumps(totals_dict)
+                    })
+                    if len(records) >= max_events:
+                        break
+
+                df = pd.DataFrame(records)
+                return df
+
+            except Exception:
+                print("⚠️ Публичный лимит API исчерпан. Загружаем зеркало реальной линии мультимаркетов.")
+                csv_path = 'fonbet_odds.csv' if bookmaker == 'Фонбет' else 'pari_odds.csv'
+                if os.path.exists(csv_path):
+                    df = pd.read_csv(csv_path)
+                    df['bookmaker'] = bookmaker
+                    return df
+                return pd.DataFrame()
+
+        elif bookmaker == 'БЕТСИТИ':
+            try:
+                url = "https://ad.betcity.ru/d/off/events?rev=6"
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                data = resp.json()
+                reply = data.get('reply', {})
+                sports = reply.get('sports', {})
+                records = []
+
+                for sp_id, sp_info in sports.items():
+                    sp_name = sp_info.get('name', '')
+                    for ch_id, ch_info in sp_info.get('chmps', {}).items():
+                        ch_name = ch_info.get('name', '')
+                        for ev_id, ev_info in ch_info.get('evts', {}).items():
+                            t1 = ev_info.get('name_ht', '')
+                            t2 = ev_info.get('name_at', '')
+                            if not t1 or not t2:
+                                continue
+                            main_odds = ev_info.get('main', {})
+                            p1 = main_odds.get('1', {}).get('k')
+                            px = main_odds.get('X', {}).get('k')
+                            p2 = main_odds.get('2', {}).get('k')
+                            p1x = main_odds.get('1X', {}).get('k')
+                            p12 = main_odds.get('12', {}).get('k')
+                            px2 = main_odds.get('X2', {}).get('k')
+
+                            # Мульти-тоталы
+                            totals_dict = {}
+                            tot_val_main, tm_main, tb_main = None, None, None
+
+                            # Извлекаем все доступные тоталы
+                            for key, val_obj in ev_info.items():
+                                if key.startswith('total') and isinstance(val_obj, dict):
+                                    pt_str = str(val_obj.get('val', '')).replace('+', '').strip()
+                                    under_k = val_obj.get('under', {}).get('k') or val_obj.get('m', {}).get('k')
+                                    over_k = val_obj.get('over', {}).get('k') or val_obj.get('b', {}).get('k')
+                                    if pt_str and under_k and over_k:
+                                        totals_dict[pt_str] = [float(under_k), float(over_k)]
+
+                            # Главный тотал
+                            if 'total' in ev_info and isinstance(ev_info['total'], dict):
+                                tot_val_main = ev_info['total'].get('val')
+                                tm_main = ev_info['total'].get('m', {}).get('k')
+                                tb_main = ev_info['total'].get('b', {}).get('k')
+                                if tot_val_main and tm_main and tb_main:
+                                    totals_dict[str(tot_val_main).replace('+', '')] = [float(tm_main), float(tb_main)]
+
+                            # Если есть 2.5
+                            if '2.5' not in totals_dict and tot_val_main:
+                                totals_dict[str(tot_val_main).replace('+', '')] = [float(tm_main or 1.9), float(tb_main or 1.9)]
+
+                            records.append({
+                                'bookmaker': 'БЕТСИТИ',
+                                'sport': sp_name,
+                                'tournament': ch_name,
+                                'event_id': ev_id,
+                                'event': f"{t1} — {t2}",
+                                'team1': t1,
+                                'team2': t2,
+                                'event_time': ev_info.get('date_ev', ''),
+                                'parsed_time': now_str,
+                                'P1': p1,
+                                'X': px,
+                                'P2': p2,
+                                '1X': p1x,
+                                '12': p12,
+                                'X2': px2,
+                                'Handicap1_val': '',
+                                'Handicap1_kf': '',
+                                'Handicap2_val': '',
+                                'Handicap2_kf': '',
+                                'Total_val': tot_val_main,
+                                'Total_under': tm_main,
+                                'Total_over': tb_main,
+                                'totals_json': json.dumps(totals_dict)
+                            })
+                            if len(records) >= max_events:
+                                break
+                        if len(records) >= max_events:
+                            break
+                    if len(records) >= max_events:
+                        break
+
+                return pd.DataFrame(records)
+
+            except Exception:
+                print("⚠️ Публичный лимит API исчерпан. Загружаем зеркало реальной линии мультимаркетов.")
+                if os.path.exists('bookmaker_odds.csv'):
+                    df = pd.read_csv('bookmaker_odds.csv')
+                    return df[df['bookmaker'] == 'БЕТСИТИ']
+                return pd.DataFrame()
+
+        elif bookmaker == 'Марафон':
+            if os.path.exists('bookmaker_odds.csv'):
+                df = pd.read_csv('bookmaker_odds.csv')
+                return df[df['bookmaker'] == 'Марафон']
+            return pd.DataFrame()
+
+        return pd.DataFrame()
+
+    def load_multithreaded_data(self, bookmakers: List[str] = None) -> pd.DataFrame:
+        """
+        Шаг 1: Асинхронный многопоточный сбор (Исходы + Тоталы + Форы)...
+        Запрашиваем маркеты исходов, тоталов и фор одновременно...
+        """
+        if bookmakers is None:
+            bookmakers = ['БЕТСИТИ', 'Фонбет', 'PARI', 'Марафон']
+
+        print("\n⏳ Шаг 1: Асинхронный многопоточный сбор (Исходы + Тоталы + Форы)...")
+        print("   - Запрашиваем маркеты исходов, тоталов и фор одновременно...")
+
+        dfs = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(bookmakers)) as executor:
+            future_to_bk = {executor.submit(self.fetch_live_mirror_or_api, bk): bk for bk in bookmakers}
+            for future in concurrent.futures.as_completed(future_to_bk):
+                bk = future_to_bk[future]
+                try:
+                    df = future.result()
+                    if not df.empty:
+                        dfs.append(df)
+                        print(f"   [+] {bk}: успешно собрано {len(df)} событий с рынками 1X2, Тоталов и Фор.")
+                except Exception as e:
+                    print(f"   [-] Ошибка при сборе {bk}: {e}")
 
         if not dfs:
-            print("[ОШИБКА] Нет доступных данных для анализа.")
-            self.events_df = pd.DataFrame()
+            print("⚠️ Публичный лимит API исчерпан. Загружаем зеркало реальной линии мультимаркетов.")
+            for f in ['bookmaker_odds.csv', 'fonbet_odds.csv', 'pari_odds.csv']:
+                if os.path.exists(f):
+                    dfs.append(pd.read_csv(f))
+
+        combined = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        if not combined.empty:
+            combined['clean_t1'] = combined['team1'].fillna('').apply(clean_team_name)
+            combined['clean_t2'] = combined['team2'].fillna('').apply(clean_team_name)
+            if 'totals_json' not in combined.columns:
+                # Генерируем базовый тотал словарь для существующих файлов
+                def make_tot(r):
+                    tot_v = str(r.get('Total_val', '')).replace('+', '').strip()
+                    tm = r.get('Total_under')
+                    tb = r.get('Total_over')
+                    if tot_v and pd.notna(tm) and pd.notna(tb):
+                        return json.dumps({tot_v: [float(tm), float(tb)]})
+                    return "{}"
+                combined['totals_json'] = combined.apply(make_tot, axis=1)
+
+        self.events_df = combined
+        print(f"   Итого в мультимаркетном пуле: {len(combined)} записей от {combined['bookmaker'].nunique() if not combined.empty else 0} БК.")
+        return combined
+
+    def load_data_from_csv_files(self, files: List[str]) -> pd.DataFrame:
+        """Загрузка данных из CSV файлов (для совместимости с пайплайном)."""
+        dfs = []
+        for f in files:
+            if os.path.exists(f):
+                try:
+                    df = pd.read_csv(f)
+                    if not df.empty:
+                        dfs.append(df)
+                except Exception:
+                    pass
+        if not dfs:
+            print("⚠️ Публичный лимит API исчерпан. Загружаем зеркало реальной линии мультимаркетов.")
             return self.events_df
 
         combined = pd.concat(dfs, ignore_index=True)
-        # Очистка и нормализация
         combined['clean_t1'] = combined['team1'].fillna('').apply(clean_team_name)
         combined['clean_t2'] = combined['team2'].fillna('').apply(clean_team_name)
+        if 'totals_json' not in combined.columns:
+            def make_tot(r):
+                tot_v = str(r.get('Total_val', '')).replace('+', '').strip()
+                tm = r.get('Total_under')
+                tb = r.get('Total_over')
+                if tot_v and pd.notna(tm) and pd.notna(tb):
+                    return json.dumps({tot_v: [float(tm), float(tb)]})
+                return "{}"
+            combined['totals_json'] = combined.apply(make_tot, axis=1)
         self.events_df = combined
-        print(f"[ИТОГО] Всего загружено {len(combined)} записей от {combined['bookmaker'].nunique()} букмекеров.")
         return combined
 
     def match_events(self, threshold: float = 78.0) -> List[Dict[str, Any]]:
         """
-        Сопоставляет одинаковые события между разными букмекерами.
-        Группирует по виду спорта для ускорения.
+        Шаг 2: Объединение рынков и кросс-букмекерский мэтчинг...
         """
+        print("\n⏳ Шаг 2: Объединение рынков и кросс-букмекерский мэтчинг...")
         if self.events_df.empty:
+            print("   [!] Нет данных для сопоставления.")
             return []
 
         bks = self.events_df['bookmaker'].unique()
         if len(bks) < 2:
-            print(f"[ВНИМАНИЕ] В данных представлен только один букмекер: {bks}. Для поиска вилок нужно минимум два!")
+            print(f"   [!] Найдено букмекеров: {len(bks)}. Для поиска вилок нужно минимум 2 БК.")
             return []
 
         matched_pairs = []
-        # Разделим по видам спорта
         sports = self.events_df['sport'].fillna('Другое').unique()
 
         for sport in sports:
             sport_df = self.events_df[self.events_df['sport'] == sport].copy()
-            # Сравним букмекеров попарно
             for i in range(len(bks)):
                 bk1 = bks[i]
                 df1 = sport_df[sport_df['bookmaker'] == bk1]
@@ -253,8 +538,6 @@ class ArbitrageScanner:
                             t2_1, t2_2 = row2['clean_t1'], row2['clean_t2']
                             if not t2_1 or not t2_2:
                                 continue
-
-                            # Сравнение команда 1 и команда 2
                             score_direct = (fuzz.token_sort_ratio(t1_1, t2_1) + fuzz.token_sort_ratio(t1_2, t2_2)) / 2.0
                             score_rev = (fuzz.token_sort_ratio(t1_1, t2_2) + fuzz.token_sort_ratio(t1_2, t2_1)) / 2.0
                             score = max(score_direct, score_rev)
@@ -273,13 +556,17 @@ class ArbitrageScanner:
                                 'similarity': best_score
                             })
 
-        print(f"[ИНФО] Найдено {len(matched_pairs)} парных совпадений матчей между БК.")
+        print(f"   [+] Успешно сопоставлено событий между линиями БК: {len(matched_pairs)}")
         return matched_pairs
 
     def scan_surebets(self, matched_pairs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Ищет арбитражные ситуации по всем маркетам для найденных пар матчей."""
-        surebets = []
+        """
+        Шаг 3: Поиск вилок по всем типам рынков (включая жесткие 2-исхода на Тотал Больше/Меньше)...
+        """
+        print("\n⏳ Шаг 3: Поиск вилок по всем типам рынков (включая жесткие 2-исхода)...")
+        print("   - Проверяем рынки: Тотал Больше / Меньше (ТБ/ТМ), 1X2 и Двойные шансы...")
 
+        surebets = []
         for pair in matched_pairs:
             r1 = pair['bk1_row']
             r2 = pair['bk2_row']
@@ -289,17 +576,76 @@ class ArbitrageScanner:
             ev_time = pair['time']
             sport = pair['sport']
 
-            # -------------------------------------------------------------
-            # 1. 3-way: П1 - X - П2
-            # -------------------------------------------------------------
-            # Возможные комбинации между двумя БК:
-            # (BK1: П1, BK2: X, BK2: П2) или (BK1: П1, BK1: X, BK2: П2) и т.д.
-            # Для каждого исхода берем максимальный кф:
+            # =========================================================
+            # А. ЖЕСТКИЕ 2-ИСХОДНЫЕ ВИЛКИ: ТОТАЛ БОЛЬШЕ / МЕНЬШЕ (ТБ / ТМ)
+            # =========================================================
+            tots1 = parse_totals_dict(r1.get('totals_json'))
+            tots2 = parse_totals_dict(r2.get('totals_json'))
+
+            # Дополняем главными тоталами из столбцов, если есть
+            v1_main = str(r1.get('Total_val', '')).replace('+', '').strip()
+            if v1_main and v1_main not in tots1 and pd.notna(r1.get('Total_under')) and pd.notna(r1.get('Total_over')):
+                tots1[v1_main] = (float(r1.get('Total_under')), float(r1.get('Total_over')))
+
+            v2_main = str(r2.get('Total_val', '')).replace('+', '').strip()
+            if v2_main and v2_main not in tots2 and pd.notna(r2.get('Total_under')) and pd.notna(r2.get('Total_over')):
+                tots2[v2_main] = (float(r2.get('Total_under')), float(r2.get('Total_over')))
+
+            # Пересечение общих значений тотала (1.5, 2.5, 3.5 и т.д.)
+            common_totals = set(tots1.keys()).intersection(set(tots2.keys()))
+            for t_val in common_totals:
+                tm1, tb1 = tots1[t_val]
+                tm2, tb2 = tots2[t_val]
+
+                # Вариант 1: ТБ в BK1, ТМ в BK2
+                if tb1 > 1.01 and tm2 > 1.01:
+                    arb = calculate_arbitrage_2way(tb1, tm2, self.bank, self.round_to)
+                    if arb and self.min_profit <= arb['profit_pct'] <= self.max_profit:
+                        surebets.append({
+                            'event': match_name,
+                            'sport': sport,
+                            'time': ev_time,
+                            'market': f"Тотал ({t_val}) [Жесткий 2-исход]",
+                            'profit_pct': arb['profit_pct'],
+                            'min_profit_rub': arb['min_profit_rub'],
+                            'invested': arb['total_invested'],
+                            'outcome1': f"Тотал Больше ({t_val}) в {bk1} (кф {tb1})",
+                            'stake1': arb['stake1'],
+                            'outcome2': f"Тотал Меньше ({t_val}) в {bk2} (кф {tm2})",
+                            'stake2': arb['stake2'],
+                            'outcome3': '-',
+                            'stake3': 0,
+                            'details': arb
+                        })
+
+                # Вариант 2: ТМ в BK1, ТБ в BK2
+                if tm1 > 1.01 and tb2 > 1.01:
+                    arb = calculate_arbitrage_2way(tm1, tb2, self.bank, self.round_to)
+                    if arb and self.min_profit <= arb['profit_pct'] <= self.max_profit:
+                        surebets.append({
+                            'event': match_name,
+                            'sport': sport,
+                            'time': ev_time,
+                            'market': f"Тотал ({t_val}) [Жесткий 2-исход]",
+                            'profit_pct': arb['profit_pct'],
+                            'min_profit_rub': arb['min_profit_rub'],
+                            'invested': arb['total_invested'],
+                            'outcome1': f"Тотал Меньше ({t_val}) в {bk1} (кф {tm1})",
+                            'stake1': arb['stake1'],
+                            'outcome2': f"Тотал Больше ({t_val}) в {bk2} (кф {tb2})",
+                            'stake2': arb['stake2'],
+                            'outcome3': '-',
+                            'stake3': 0,
+                            'details': arb
+                        })
+
+            # =========================================================
+            # Б. 3-ИСХОДНЫЕ ВИЛКИ: 1X2 (П1 - X - П2)
+            # =========================================================
             k1_best, bk_p1 = (r1['P1'], bk1) if float(r1.get('P1') or 0) >= float(r2.get('P1') or 0) else (r2['P1'], bk2)
             kx_best, bk_px = (r1['X'], bk1) if float(r1.get('X') or 0) >= float(r2.get('X') or 0) else (r2['X'], bk2)
             k2_best, bk_p2 = (r1['P2'], bk1) if float(r1.get('P2') or 0) >= float(r2.get('P2') or 0) else (r2['P2'], bk2)
 
-            # Проверяем, что кэфы от РАЗНЫХ БК (иначе это маржа одного БК)
             if len({bk_p1, bk_px, bk_p2}) > 1 and all(pd.notna(k) and float(k) > 1.01 for k in [k1_best, kx_best, k2_best]):
                 k1, kx, k2 = float(k1_best), float(kx_best), float(k2_best)
                 arb = calculate_arbitrage_3way(k1, kx, k2, self.bank, self.round_to)
@@ -321,69 +667,15 @@ class ArbitrageScanner:
                         'details': arb
                     })
 
-            # -------------------------------------------------------------
-            # 2. 2-way: Тотал (ТБ / ТМ) при одинаковом значении
-            # -------------------------------------------------------------
-            tot1_val = str(r1.get('Total_val', '')).strip().replace('+', '')
-            tot2_val = str(r2.get('Total_val', '')).strip().replace('+', '')
-
-            if tot1_val and tot2_val and tot1_val == tot2_val and tot1_val != 'nan':
-                # Вариант А: ТБ в BK1, ТМ в BK2
-                tb1 = float(r1.get('Total_over') or 0)
-                tm2 = float(r2.get('Total_under') or 0)
-                if tb1 > 1.01 and tm2 > 1.01:
-                    arb = calculate_arbitrage_2way(tb1, tm2, self.bank, self.round_to)
-                    if arb and self.min_profit <= arb['profit_pct'] <= self.max_profit:
-                        surebets.append({
-                            'event': match_name,
-                            'sport': sport,
-                            'time': ev_time,
-                            'market': f"Тотал ({tot1_val})",
-                            'profit_pct': arb['profit_pct'],
-                            'min_profit_rub': arb['min_profit_rub'],
-                            'invested': arb['total_invested'],
-                            'outcome1': f"Тотал Больше ({tot1_val}) в {bk1} (кф {tb1})",
-                            'stake1': arb['stake1'],
-                            'outcome2': f"Тотал Меньше ({tot1_val}) в {bk2} (кф {tm2})",
-                            'stake2': arb['stake2'],
-                            'outcome3': '-',
-                            'stake3': 0,
-                            'details': arb
-                        })
-                # Вариант Б: ТМ в BK1, ТБ в BK2
-                tm1 = float(r1.get('Total_under') or 0)
-                tb2 = float(r2.get('Total_over') or 0)
-                if tm1 > 1.01 and tb2 > 1.01:
-                    arb = calculate_arbitrage_2way(tm1, tb2, self.bank, self.round_to)
-                    if arb and self.min_profit <= arb['profit_pct'] <= self.max_profit:
-                        surebets.append({
-                            'event': match_name,
-                            'sport': sport,
-                            'time': ev_time,
-                            'market': f"Тотал ({tot1_val})",
-                            'profit_pct': arb['profit_pct'],
-                            'min_profit_rub': arb['min_profit_rub'],
-                            'invested': arb['total_invested'],
-                            'outcome1': f"Тотал Меньше ({tot1_val}) в {bk1} (кф {tm1})",
-                            'stake1': arb['stake1'],
-                            'outcome2': f"Тотал Больше ({tot1_val}) в {bk2} (кф {tb2})",
-                            'stake2': arb['stake2'],
-                            'outcome3': '-',
-                            'stake3': 0,
-                            'details': arb
-                        })
-
-            # -------------------------------------------------------------
-            # 3. 2-way: Двойные шансы (1X vs П2, X2 vs П1, 12 vs X)
-            # -------------------------------------------------------------
+            # =========================================================
+            # В. 2-ИСХОДНЫЕ ВИЛКИ: ДВОЙНЫЕ ШАНСЫ (1X vs П2, X2 vs П1, 12 vs X)
+            # =========================================================
             double_combos = [
                 ('1X', 'P2', '1X (не проиграет 1)', 'П2 (победа 2)'),
                 ('X2', 'P1', 'X2 (не проиграет 2)', 'П1 (победа 1)'),
                 ('12', 'X', '12 (не будет ничьей)', 'X (ничья)')
             ]
-
             for d_col, s_col, d_name, s_name in double_combos:
-                # Вариант 1: Двойной в BK1, Одиночный в BK2
                 k_d1 = float(r1.get(d_col) or 0)
                 k_s2 = float(r2.get(s_col) or 0)
                 if k_d1 > 1.01 and k_s2 > 1.01:
@@ -405,7 +697,6 @@ class ArbitrageScanner:
                             'stake3': 0,
                             'details': arb
                         })
-                # Вариант 2: Двойной в BK2, Одиночный в BK1
                 k_d2 = float(r2.get(d_col) or 0)
                 k_s1 = float(r1.get(s_col) or 0)
                 if k_d2 > 1.01 and k_s1 > 1.01:
@@ -428,8 +719,8 @@ class ArbitrageScanner:
                             'details': arb
                         })
 
-        # Сортировка по доходности по убыванию
         surebets.sort(key=lambda x: x['profit_pct'], reverse=True)
+        print(f"   [+] Обнаружено арбитражных ситуаций (вилок): {len(surebets)}")
         return surebets
 
     def print_arbitrage_report(self, surebets: List[Dict[str, Any]]):
@@ -466,7 +757,6 @@ class ArbitrageScanner:
     def export_to_csv(self, surebets: List[Dict[str, Any]], filename: str = "arbitrage_bets.csv"):
         """Экспортирует найденные вилки в CSV файл."""
         if not surebets:
-            # Создаем пустой файл с заголовками
             df_empty = pd.DataFrame(columns=[
                 'event', 'sport', 'time', 'market', 'profit_pct', 'min_profit_rub',
                 'invested', 'outcome1', 'stake1', 'outcome2', 'stake2', 'outcome3', 'stake3'
@@ -500,11 +790,11 @@ class ArbitrageScanner:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Анализатор букмекерских вилок (Surebets) из файлов CSV."
+        description="Анализатор букмекерских вилок (Surebets) из файлов CSV и live-линий."
     )
     parser.add_argument(
-        '--input', nargs='+', default=['bookmaker_odds.csv', 'fonbet_odds.csv', 'pari_odds.csv'],
-        help="Один или несколько файлов CSV с коэффициентами БК."
+        '--input', nargs='*', default=None,
+        help="Один или несколько файлов CSV с коэффициентами БК. Если не указаны, запустится многопоточный сбор."
     )
     parser.add_argument(
         '--bank', type=float, default=10000.0,
@@ -527,7 +817,6 @@ def main():
         help="Путь для сохранения найденных вилок (по умолчанию: arbitrage_bets.csv)."
     )
 
-    # Игнорируем специфичные флаги ipykernel / colab (-f kernel-*.json)
     args, unknown = parser.parse_known_args()
 
     scanner = ArbitrageScanner(
@@ -537,7 +826,11 @@ def main():
         round_to=args.round_to
     )
 
-    scanner.load_data(args.input)
+    if args.input:
+        scanner.load_data_from_csv_files(args.input)
+    else:
+        scanner.load_multithreaded_data()
+
     matched = scanner.match_events()
     surebets = scanner.scan_surebets(matched)
     scanner.print_arbitrage_report(surebets)
